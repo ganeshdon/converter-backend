@@ -44,6 +44,9 @@ reportlab==4.4.4
 # Payments
 dodopayments==1.53.5
 
+# Email
+resend==2.4.0
+
 # File Handling
 python-multipart==0.0.20
 

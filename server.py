@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 import aiohttp
 import json
 import httpx
+import resend
 # Removed Stripe integration - now using Dodo Payments
 
 # Import our modules
@@ -24,7 +25,7 @@ from auth import get_password_hash, verify_password, create_access_token, verify
 from models import (
     UserSignup, UserLogin, UserResponse, TokenResponse, DocumentResponse,
     PagesCheckRequest, PagesCheckResponse, SubscriptionTier, SubscriptionPlan,
-    UserUpdate, PasswordReset, PasswordChange, BillingInterval, GoogleUserData, UserSession,
+    UserUpdate, PasswordReset, PasswordResetRequest, PasswordChange, BillingInterval, GoogleUserData, UserSession,
     AnonymousConversionCheck, AnonymousConversionResponse, AnonymousConversionRecord,
     SubscriptionPackage, PaymentSessionRequest, PaymentSessionResponse, PaymentTransaction, WebhookEventResponse
 )
@@ -37,10 +38,24 @@ load_dotenv(ROOT_DIR / '.env')
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
+# CORS origins - default to common development origins
+# For production, set CORS_ORIGINS environment variable to your frontend URL(s)
+# Example: CORS_ORIGINS=http://localhost:3000,https://yourdomain.com
+CORS_ORIGINS_ENV = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
+# Handle wildcard - if "*" is provided, use specific origins for development
+if CORS_ORIGINS_ENV.strip() == "*":
+    CORS_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
+else:
+    CORS_ORIGINS = [origin.strip() for origin in CORS_ORIGINS_ENV.split(",") if origin.strip()]
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 if not JWT_SECRET_KEY:
     raise ValueError("JWT_SECRET_KEY environment variable is required")
+
+# Email configuration (Resend)
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev")
+RESEND_FROM_NAME = os.getenv("RESEND_FROM_NAME", "Bank Statement Converter")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
 # Define subscription packages - SECURITY: Server-side only pricing
 # WordPress Hostinger Configuration
@@ -87,9 +102,23 @@ subscriptions_collection = db.subscriptions
 user_sessions_collection = db.user_sessions
 anonymous_conversions_collection = db.anonymous_conversions
 payment_transactions_collection = db.payment_transactions
+password_reset_tokens_collection = db.password_reset_tokens
 
 # Create the main app without a prefix
 app = FastAPI()
+
+# CORS configuration - MUST be added BEFORE routers
+# Use specific origins to allow credentials
+# For production, set CORS_ORIGINS environment variable to your frontend URL(s)
+# Example: CORS_ORIGINS=http://localhost:3000,https://yourdomain.com
+print(f"CORS Origins configured: {CORS_ORIGINS}")  # Debug log
+app.add_middleware(
+    CORSMiddleware,
+    allow_credentials=True,
+    allow_origins=CORS_ORIGINS,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
@@ -181,7 +210,20 @@ async def signup(user_data: UserSignup):
 async def login(credentials: UserLogin):
     """Login user"""
     user = await users_collection.find_one({"email": credentials.email})
-    if not user or not verify_password(credentials.password, user["password_hash"]):
+    
+    # Check if user exists
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    
+    # Check if user is an OAuth user (no password_hash)
+    if not user.get("password_hash"):
+        raise HTTPException(
+            status_code=401, 
+            detail="This account was created with Google. Please use Google login instead."
+        )
+    
+    # Verify password for regular users
+    if not verify_password(credentials.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     
     # Check if daily free user needs reset
@@ -211,8 +253,215 @@ async def logout(current_user: dict = Depends(verify_token)):
     """Logout user (client should delete token)"""
     return {"message": "Logged out successfully"}
 
+async def send_password_reset_email(to_email: str, reset_link: str, user_name: str = None):
+    """Send password reset email to user using Resend"""
+    try:
+        # If Resend API key is not configured, log the email instead
+        if not RESEND_API_KEY:
+            logger.warning(f"Resend API key not configured. Password reset link for {to_email}: {reset_link}")
+            logger.info(f"To enable email sending, configure RESEND_API_KEY environment variable")
+            return False
+        
+        # Set Resend API key (for version 2.4.0)
+        resend.api_key = RESEND_API_KEY
+        
+        # Email body (HTML)
+        html_body = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+                <h1 style="color: white; margin: 0;">Password Reset Request</h1>
+            </div>
+            <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px;">
+                <p>Hello{f' {user_name}' if user_name else ''},</p>
+                <p>We received a request to reset your password for your Bank Statement Converter account.</p>
+                <p>Click the button below to reset your password:</p>
+                <div style="text-align: center; margin: 30px 0;">
+                    <a href="{reset_link}" style="background-color: #667eea; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">Reset Password</a>
+                </div>
+                <p>Or copy and paste this link into your browser:</p>
+                <p style="word-break: break-all; color: #667eea;">{reset_link}</p>
+                <p><strong>This link will expire in 1 hour.</strong></p>
+                <p>If you didn't request a password reset, please ignore this email. Your password will remain unchanged.</p>
+                <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+                <p style="font-size: 12px; color: #666;">This is an automated message, please do not reply to this email.</p>
+            </div>
+        </body>
+        </html>
+        """
+        
+        # Plain text version
+        text_body = f"""
+        Password Reset Request
+        
+        Hello{f' {user_name}' if user_name else ''},
+        
+        We received a request to reset your password for your Bank Statement Converter account.
+        
+        Click the following link to reset your password:
+        {reset_link}
+        
+        This link will expire in 1 hour.
+        
+        If you didn't request a password reset, please ignore this email. Your password will remain unchanged.
+        
+        This is an automated message, please do not reply to this email.
+        """
+        
+        # Send email using Resend
+        # Run in thread pool to avoid blocking
+        def send_sync():
+            try:
+                params = {
+                    "from": f"{RESEND_FROM_NAME} <{RESEND_FROM_EMAIL}>",
+                    "to": [to_email],
+                    "subject": "Reset Your Password - Bank Statement Converter",
+                    "html": html_body,
+                    "text": text_body,
+                }
+                
+                result = resend.Emails.send(params)
+                
+                # Resend returns a dict with 'id' if successful
+                if result and result.get('id'):
+                    logger.info(f"Resend email sent successfully. Email ID: {result.get('id')}")
+                    return True
+                else:
+                    logger.error(f"Resend returned unexpected response: {result}")
+                    return False
+            except Exception as e:
+                logger.error(f"Error sending email via Resend: {str(e)}")
+                logger.exception(e)  # Log full traceback for debugging
+                return False
+        
+        # Run in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        success = await loop.run_in_executor(None, send_sync)
+        
+        if success:
+            logger.info(f"Password reset email sent successfully to {to_email} via Resend")
+        else:
+            logger.error(f"Failed to send password reset email to {to_email} via Resend")
+            # Still log the link for manual testing
+            logger.warning(f"Password reset link for manual testing: {reset_link}")
+        
+        return success
+        
+    except Exception as e:
+        logger.error(f"Error in send_password_reset_email: {str(e)}")
+        return False
+
+@api_router.post("/auth/forgot-password")
+async def forgot_password(reset_request: PasswordReset):
+    """Request password reset - sends reset token to user's email"""
+    user = await users_collection.find_one({"email": reset_request.email})
+    
+    # Don't reveal if user exists or not (security best practice)
+    if not user:
+        # Still return success to prevent email enumeration
+        return {"message": "If an account with that email exists, a password reset link has been sent."}
+    
+    # Check if user is an OAuth user (no password_hash)
+    if not user.get("password_hash"):
+        # Still return success to prevent revealing account type
+        return {"message": "If an account with that email exists, a password reset link has been sent."}
+    
+    # Generate reset token
+    reset_token = str(uuid.uuid4())
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=1)  # Token expires in 1 hour
+    
+    # Store reset token
+    reset_token_doc = {
+        "user_id": user["_id"],
+        "email": user["email"],
+        "token": reset_token,
+        "expires_at": expires_at,
+        "used": False,
+        "created_at": datetime.now(timezone.utc)
+    }
+    
+    # Delete any existing reset tokens for this user
+    await password_reset_tokens_collection.delete_many({"user_id": user["_id"], "used": False})
+    
+    # Insert new reset token
+    await password_reset_tokens_collection.insert_one(reset_token_doc)
+    
+    # Generate reset link
+    reset_link = f"{FRONTEND_URL}/reset-password?token={reset_token}"
+    
+    # Send email with reset link
+    user_name = user.get("full_name", "")
+    email_sent = await send_password_reset_email(user["email"], reset_link, user_name)
+    
+    if not email_sent:
+        # Log the link if email sending failed (for development/testing)
+        logger.warning(f"Email sending failed. Password reset link for {user['email']}: {reset_link}")
+    
+    return {"message": "If an account with that email exists, a password reset link has been sent."}
+
+@api_router.post("/auth/reset-password")
+async def reset_password(reset_request: PasswordResetRequest):
+    """Reset password using reset token"""
+    # Find the reset token
+    reset_token_doc = await password_reset_tokens_collection.find_one({
+        "token": reset_request.token,
+        "used": False
+    })
+    
+    if not reset_token_doc:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+    
+    # Check if token has expired
+    expires_at = reset_token_doc["expires_at"]
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    
+    if expires_at < datetime.now(timezone.utc):
+        # Mark as used even though expired
+        await password_reset_tokens_collection.update_one(
+            {"token": reset_request.token},
+            {"$set": {"used": True}}
+        )
+        raise HTTPException(status_code=400, detail="Reset token has expired. Please request a new one.")
+    
+    # Get user
+    user = await users_collection.find_one({"_id": reset_token_doc["user_id"]})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Hash new password
+    hashed_password = get_password_hash(reset_request.new_password)
+    
+    # Update user password
+    await users_collection.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"password_hash": hashed_password, "updated_at": datetime.now(timezone.utc)}}
+    )
+    
+    # Mark reset token as used
+    await password_reset_tokens_collection.update_one(
+        {"token": reset_request.token},
+        {"$set": {"used": True}}
+    )
+    
+    # Delete all other unused reset tokens for this user
+    await password_reset_tokens_collection.delete_many({
+        "user_id": user["_id"],
+        "used": False,
+        "token": {"$ne": reset_request.token}
+    })
+    
+    logger.info(f"Password reset successful for user {user['email']}")
+    
+    return {"message": "Password has been reset successfully. You can now login with your new password."}
+
 # Google OAuth Authentication using Emergent Auth
-@api_router.get("/auth/oauth/session-data", response_model=UserResponse)
+@api_router.get("/auth/oauth/session-data")
 async def get_session_data(request: Request):
     """Process session_id from Emergent Auth and return user data"""
     session_id = request.headers.get("X-Session-ID")
@@ -285,7 +534,8 @@ async def get_session_data(request: Request):
         # Get updated user data
         user = await users_collection.find_one({"_id": user_id})
         
-        return UserResponse(
+        # Return user data with session_token for OAuth users
+        user_response = UserResponse(
             id=user["_id"],
             email=user["email"],
             full_name=user["full_name"],
@@ -296,6 +546,11 @@ async def get_session_data(request: Request):
             daily_reset_time=user.get("daily_reset_time"),
             language_preference=user.get("language_preference", "en")
         )
+        
+        # Return as dict to include session_token
+        response_dict = user_response.dict()
+        response_dict["session_token"] = session_token
+        return response_dict
         
     except Exception as e:
         logger.error(f"OAuth session error: {str(e)}")
@@ -1147,14 +1402,6 @@ app.include_router(api_router)
 
 # Include Dodo Payments routes
 app.include_router(dodo_routes.router)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=CORS_ORIGINS,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # Configure logging
 logging.basicConfig(
