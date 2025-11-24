@@ -33,18 +33,30 @@ import dodo_routes
 
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+env_path = ROOT_DIR / '.env'
+load_dotenv(env_path)
+
+# Configure logging early for debugging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Debug: Log .env file location and if it exists
+logger.info(f"Loading .env from: {env_path}")
+logger.info(f".env file exists: {env_path.exists()}")
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-# CORS origins - default to common development origins
+# CORS origins - default to production frontend URL
 # For production, set CORS_ORIGINS environment variable to your frontend URL(s)
 # Example: CORS_ORIGINS=http://localhost:3000,https://yourdomain.com
-CORS_ORIGINS_ENV = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
+CORS_ORIGINS_ENV = os.getenv("CORS_ORIGINS", "https://yourbankstatementconverter.com,http://localhost:3000,http://127.0.0.1:3000")
 # Handle wildcard - if "*" is provided, use specific origins for development
 if CORS_ORIGINS_ENV.strip() == "*":
-    CORS_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    CORS_ORIGINS = ["https://yourbankstatementconverter.com", "http://localhost:3000", "http://127.0.0.1:3000"]
 else:
     CORS_ORIGINS = [origin.strip() for origin in CORS_ORIGINS_ENV.split(",") if origin.strip()]
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
@@ -55,7 +67,12 @@ if not JWT_SECRET_KEY:
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev")
 RESEND_FROM_NAME = os.getenv("RESEND_FROM_NAME", "Bank Statement Converter")
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://yourbankstatementconverter.com")
+
+# Debug: Log loaded environment variables (without sensitive data)
+logger.info(f"FRONTEND_URL loaded: {FRONTEND_URL}")
+logger.info(f"CORS_ORIGINS loaded: {CORS_ORIGINS}")
+logger.info(f"RESEND_API_KEY configured: {'Yes' if RESEND_API_KEY else 'No'}")
 
 # Define subscription packages - SECURITY: Server-side only pricing
 # WordPress Hostinger Configuration
@@ -201,7 +218,8 @@ async def signup(user_data: UserSignup):
         pages_limit=7,
         billing_cycle_start=now,
         daily_reset_time=now,
-        language_preference="en"
+        language_preference="en",
+        billing_interval=None
     )
     
     return TokenResponse(access_token=access_token, token_type="bearer", user=user_response)
@@ -243,7 +261,8 @@ async def login(credentials: UserLogin):
         pages_limit=user["pages_limit"],
         billing_cycle_start=user.get("billing_cycle_start"),
         daily_reset_time=user.get("daily_reset_time"),
-        language_preference=user.get("language_preference", "en")
+        language_preference=user.get("language_preference", "en"),
+        billing_interval=user.get("billing_interval")
     )
     
     return TokenResponse(access_token=access_token, token_type="bearer", user=user_response)
@@ -261,6 +280,16 @@ async def send_password_reset_email(to_email: str, reset_link: str, user_name: s
             logger.warning(f"Resend API key not configured. Password reset link for {to_email}: {reset_link}")
             logger.info(f"To enable email sending, configure RESEND_API_KEY environment variable")
             return False
+        
+        # Validate API key format
+        if not RESEND_API_KEY.startswith('re_'):
+            logger.error(f"Invalid Resend API key format. API key should start with 're_'. Current key starts with: {RESEND_API_KEY[:3] if len(RESEND_API_KEY) >= 3 else 'N/A'}")
+            return False
+        
+        # Log configuration (without exposing full API key)
+        logger.info(f"Attempting to send password reset email to {to_email}")
+        logger.info(f"Using FROM email: {RESEND_FROM_EMAIL}")
+        logger.info(f"Resend API key configured: Yes (starts with {RESEND_API_KEY[:5]}...)")
         
         # Set Resend API key (for version 2.4.0)
         resend.api_key = RESEND_API_KEY
@@ -325,18 +354,43 @@ async def send_password_reset_email(to_email: str, reset_link: str, user_name: s
                     "text": text_body,
                 }
                 
+                logger.info(f"Sending email via Resend with params: from={RESEND_FROM_EMAIL}, to={to_email}")
                 result = resend.Emails.send(params)
                 
+                # Log the full result for debugging
+                logger.info(f"Resend API response: {result}")
+                
                 # Resend returns a dict with 'id' if successful
-                if result and result.get('id'):
-                    logger.info(f"Resend email sent successfully. Email ID: {result.get('id')}")
-                    return True
+                if result and isinstance(result, dict):
+                    if result.get('id'):
+                        logger.info(f"Resend email sent successfully. Email ID: {result.get('id')}")
+                        return True
+                    elif result.get('error'):
+                        # Resend API error response
+                        error_msg = result.get('error', {}).get('message', 'Unknown error')
+                        logger.error(f"Resend API error: {error_msg}")
+                        logger.error(f"Full error response: {result}")
+                        return False
+                    else:
+                        logger.error(f"Resend returned unexpected response (no 'id' or 'error' field): {result}")
+                        return False
                 else:
-                    logger.error(f"Resend returned unexpected response: {result}")
+                    logger.error(f"Resend returned unexpected response type: {type(result)}, value: {result}")
                     return False
             except Exception as e:
-                logger.error(f"Error sending email via Resend: {str(e)}")
+                error_msg = str(e)
+                error_type = type(e).__name__
+                logger.error(f"Exception sending email via Resend: {error_type}: {error_msg}")
                 logger.exception(e)  # Log full traceback for debugging
+                
+                # Check for common error patterns
+                if 'unauthorized' in error_msg.lower() or '401' in error_msg:
+                    logger.error("Possible issue: Invalid Resend API key or API key not authorized")
+                elif 'domain' in error_msg.lower() or 'from' in error_msg.lower():
+                    logger.error(f"Possible issue: FROM email ({RESEND_FROM_EMAIL}) might not be verified in Resend")
+                elif 'rate limit' in error_msg.lower():
+                    logger.error("Possible issue: Rate limit exceeded for Resend API")
+                
                 return False
         
         # Run in thread pool to avoid blocking
@@ -354,6 +408,7 @@ async def send_password_reset_email(to_email: str, reset_link: str, user_name: s
         
     except Exception as e:
         logger.error(f"Error in send_password_reset_email: {str(e)}")
+        logger.exception(e)  # Log full traceback
         return False
 
 @api_router.post("/auth/forgot-password")
@@ -645,7 +700,8 @@ async def get_profile(current_user: dict = Depends(get_current_user)):
         pages_limit=user["pages_limit"],
         billing_cycle_start=user.get("billing_cycle_start"),
         daily_reset_time=user.get("daily_reset_time"),
-        language_preference=user.get("language_preference", "en")
+        language_preference=user.get("language_preference", "en"),
+        billing_interval=user.get("billing_interval")
     )
 
 @api_router.put("/user/profile", response_model=UserResponse)
@@ -669,7 +725,8 @@ async def update_profile(updates: UserUpdate, current_user: dict = Depends(get_c
         pages_limit=user["pages_limit"],
         billing_cycle_start=user.get("billing_cycle_start"),
         daily_reset_time=user.get("daily_reset_time"),
-        language_preference=user.get("language_preference", "en")
+        language_preference=user.get("language_preference", "en"),
+        billing_interval=user.get("billing_interval")
     )
 
 @api_router.post("/user/pages/check", response_model=PagesCheckResponse)
@@ -1403,12 +1460,7 @@ app.include_router(api_router)
 # Include Dodo Payments routes
 app.include_router(dodo_routes.router)
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Logger already configured above
 
 # Startup and shutdown events
 @app.on_event("startup")

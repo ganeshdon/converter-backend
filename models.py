@@ -52,6 +52,7 @@ class UserResponse(BaseModel):
     billing_cycle_start: Optional[datetime]
     daily_reset_time: Optional[datetime]
     language_preference: str = "en"
+    billing_interval: Optional[str] = None  # "monthly" or "annual"
 
 class TokenResponse(BaseModel):
     access_token: str

@@ -284,15 +284,18 @@ async def check_subscription_status(subscription_id: str, current_user: dict = D
                 user_id = db_subscription["user_id"]
                 plan = normalize_plan_name(db_subscription["plan"])
                 
-                # Determine pages based on plan
+                # Determine pages based on plan (must match SUBSCRIPTION_PACKAGES in server.py)
                 pages_limit_map = {
-                    "starter": 50,
-                    "professional": 200,
-                    "business": 500,
+                    "starter": 400,
+                    "professional": 1000,
+                    "business": 4000,
                     "enterprise": -1  # -1 means unlimited
                 }
-                pages_limit = pages_limit_map.get(plan, 50)
+                pages_limit = pages_limit_map.get(plan, 400)
                 pages_remaining = pages_limit if pages_limit != -1 else -1
+                
+                # Get billing_interval from subscription
+                billing_interval = db_subscription.get("billing_interval", "monthly")
                 
                 # Update user with subscription details
                 await db.users.update_one(
@@ -301,6 +304,7 @@ async def check_subscription_status(subscription_id: str, current_user: dict = D
                         "$set": {
                             "subscription_status": "active",
                             "subscription_tier": plan,
+                            "billing_interval": billing_interval,
                             "pages_limit": pages_limit,
                             "pages_remaining": pages_remaining,
                             "updated_at": datetime.utcnow()
@@ -430,19 +434,39 @@ async def handle_subscription_active(data: dict):
         }
     )
     
-    # Update user's subscription status
+    # Update user's subscription status and pages
     subscription = await db.subscriptions.find_one({"subscription_id": subscription_id})
     if subscription:
+        plan = normalize_plan_name(subscription["plan"])
+        
+        # Determine pages based on plan (must match SUBSCRIPTION_PACKAGES in server.py)
+        pages_limit_map = {
+            "starter": 400,
+            "professional": 1000,
+            "business": 4000,
+            "enterprise": -1  # -1 means unlimited
+        }
+        pages_limit = pages_limit_map.get(plan, 400)
+        pages_remaining = pages_limit if pages_limit != -1 else -1
+        
+        # Get billing_interval from subscription
+        billing_interval = subscription.get("billing_interval", "monthly")
+        
         await db.users.update_one(
             {"_id": subscription["user_id"]},
             {
                 "$set": {
                     "subscription_status": "active",
-                    "subscription_tier": subscription["plan"],
+                    "subscription_tier": plan,
+                    "billing_interval": billing_interval,
+                    "pages_limit": pages_limit,
+                    "pages_remaining": pages_remaining,
                     "updated_at": datetime.utcnow()
                 }
             }
         )
+        
+        logger.info(f"Updated user {subscription['user_id']} with {pages_remaining} pages for {plan} plan ({billing_interval})")
 
 
 async def handle_subscription_renewed(data: dict):
@@ -460,6 +484,41 @@ async def handle_subscription_renewed(data: dict):
             }
         }
     )
+    
+    # Reset user's pages when subscription renews
+    subscription = await db.subscriptions.find_one({"subscription_id": subscription_id})
+    if subscription:
+        plan = normalize_plan_name(subscription["plan"])
+        
+        # Determine pages based on plan (must match SUBSCRIPTION_PACKAGES in server.py)
+        pages_limit_map = {
+            "starter": 400,
+            "professional": 1000,
+            "business": 4000,
+            "enterprise": -1  # -1 means unlimited
+        }
+        pages_limit = pages_limit_map.get(plan, 400)
+        pages_remaining = pages_limit if pages_limit != -1 else -1
+        
+        # Get billing_interval from subscription (preserve existing if not in subscription)
+        billing_interval = subscription.get("billing_interval")
+        
+        update_data = {
+            "pages_limit": pages_limit,
+            "pages_remaining": pages_remaining,
+            "updated_at": datetime.utcnow()
+        }
+        
+        # Only update billing_interval if it exists in subscription
+        if billing_interval:
+            update_data["billing_interval"] = billing_interval
+        
+        await db.users.update_one(
+            {"_id": subscription["user_id"]},
+            {"$set": update_data}
+        )
+        
+        logger.info(f"Renewed subscription for user {subscription['user_id']} - reset to {pages_remaining} pages for {plan} plan")
 
 
 async def handle_subscription_on_hold(data: dict):
