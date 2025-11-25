@@ -835,8 +835,10 @@ async def process_pdf_with_ai(file: UploadFile = File(...), current_user: dict =
             {"$inc": {"pages_remaining": -page_count}}
         )
         
-        # Save document record
+        # Save document record with 24-hour expiration
         doc_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(hours=24)  # Documents expire after 24 hours
         document_doc = {
             "_id": doc_id,
             "user_id": current_user["user_id"],
@@ -844,7 +846,8 @@ async def process_pdf_with_ai(file: UploadFile = File(...), current_user: dict =
             "file_size": len(content),
             "page_count": page_count,
             "pages_deducted": page_count,
-            "conversion_date": datetime.now(timezone.utc),
+            "conversion_date": now,
+            "expires_at": expires_at,  # 24-hour expiration
             "download_count": 0,
             "status": "completed"
         }
@@ -863,9 +866,17 @@ async def process_pdf_with_ai(file: UploadFile = File(...), current_user: dict =
 
 @api_router.get("/documents", response_model=List[DocumentResponse])
 async def get_documents(current_user: dict = Depends(get_current_user)):
-    """Get user's document history"""
+    """Get user's document history (only non-expired documents)"""
+    now = datetime.now(timezone.utc)
+    # Only return documents that haven't expired
     documents = await documents_collection.find(
-        {"user_id": current_user["user_id"]}
+        {
+            "user_id": current_user["user_id"],
+            "$or": [
+                {"expires_at": {"$exists": False}},  # Legacy documents without expiration
+                {"expires_at": {"$gt": now}}  # Documents that haven't expired
+            ]
+        }
     ).sort("conversion_date", -1).to_list(length=100)
     
     return [DocumentResponse(
@@ -1306,6 +1317,31 @@ async def count_pdf_pages(pdf_path: str) -> int:
         print(f"Error counting PDF pages: {e}")
         return 1  # Default to 1 page if counting fails
 
+async def cleanup_expired_documents():
+    """Delete documents that have expired (older than 24 hours)"""
+    try:
+        now = datetime.now(timezone.utc)
+        # Delete documents that have an expires_at field and it's in the past
+        result = await documents_collection.delete_many({
+            "expires_at": {"$exists": True, "$lte": now}
+        })
+        if result.deleted_count > 0:
+            logger.info(f"Cleaned up {result.deleted_count} expired documents")
+        return result.deleted_count
+    except Exception as e:
+        logger.error(f"Error cleaning up expired documents: {str(e)}")
+        return 0
+
+async def periodic_cleanup():
+    """Background task that runs every hour to clean up expired documents"""
+    while True:
+        try:
+            await asyncio.sleep(3600)  # Wait 1 hour
+            await cleanup_expired_documents()
+        except Exception as e:
+            logger.error(f"Error in periodic cleanup task: {str(e)}")
+            await asyncio.sleep(3600)  # Wait before retrying
+
 async def check_and_reset_daily_pages(user_id: str):
     """Check if daily free tier user needs page reset"""
     user = await users_collection.find_one({"_id": user_id})
@@ -1462,6 +1498,17 @@ app.include_router(dodo_routes.router)
 
 # Logger already configured above
 
+# Background task for cleaning up expired documents
+async def periodic_cleanup():
+    """Background task that runs every hour to clean up expired documents"""
+    while True:
+        try:
+            await asyncio.sleep(3600)  # Wait 1 hour
+            await cleanup_expired_documents()
+        except Exception as e:
+            logger.error(f"Error in periodic cleanup task: {str(e)}")
+            await asyncio.sleep(3600)  # Wait before retrying
+
 # Startup and shutdown events
 @app.on_event("startup")
 async def startup_db_client():
@@ -1470,6 +1517,15 @@ async def startup_db_client():
         client = AsyncIOMotorClient(mongo_url)
         db = client[os.environ['DB_NAME']]
         logger.info("Connected to MongoDB successfully")
+        
+        # Run initial cleanup of expired documents
+        deleted_count = await cleanup_expired_documents()
+        if deleted_count > 0:
+            logger.info(f"Initial cleanup: Deleted {deleted_count} expired documents")
+        
+        # Start background task for periodic cleanup (runs every hour)
+        asyncio.create_task(periodic_cleanup())
+        logger.info("Started background task for periodic document cleanup")
     except Exception as e:
         logger.error(f"Failed to connect to MongoDB: {e}")
         raise

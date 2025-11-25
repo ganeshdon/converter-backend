@@ -11,6 +11,14 @@ PRODUCT_IDS = {
     "business_annual": "pdt_rQiqTXDkiarEO0HW4WrIS",
 }
 
+def get_dodo_api_base_url():
+    """Get Dodo Payments API base URL based on environment"""
+    environment = os.getenv("DODO_PAYMENTS_ENVIRONMENT", "test_mode")
+    if environment == "live_mode":
+        return "https://live.dodopayments.com"
+    else:
+        return "https://test.dodopayments.com"
+
 def get_dodo_client():
     """Initialize and return Async Dodo Payments client"""
     api_key = os.getenv("DODO_PAYMENTS_API_KEY")
