@@ -1052,16 +1052,21 @@ async def fetch_and_save_invoice_after_payment(
                         # Validate that it's a payment ID, not a payment method ID
                         if payment_id and not payment_id.startswith("pm_"):
                             # Create a payment-like object from subscription
+                            # Get amount from subscription, convert from cents if needed
+                            sub_amount = data_obj.get("recurring_pre_tax_amount", 0)
+                            if sub_amount and sub_amount > 100:
+                                sub_amount = sub_amount / 100
+                            
                             payments_list.append({
                                 "id": payment_id,
                                 "payment_id": payment_id,
                                 "subscription_id": subscription_id,
-                                "amount": data_obj.get("recurring_pre_tax_amount", 0),
+                                "amount": sub_amount,
                                 "currency": data_obj.get("currency", "usd"),
                                 "status": "succeeded",
                                 "created_at": data_obj.get("created_at") or data_obj.get("previous_billing_date")
                             })
-                            logger.info(f"Found payment_id from subscription: {payment_id}")
+                            logger.info(f"Found payment_id from subscription: {payment_id}, amount: {sub_amount}")
                         elif payment_id and payment_id.startswith("pm_"):
                             logger.warning(f"Ignoring payment_method_id (pm_): {payment_id}. Need actual payment_id (pay_)")
             except Exception as e:
@@ -1306,8 +1311,21 @@ async def fetch_and_save_invoice_after_payment(
                         amount = invoice_data.get("amount")
                     
                     # Convert amount from cents to dollars if needed
-                    if amount and amount > 1000:  # Likely in cents
+                    if amount and amount > 100:  # Likely in cents (changed from 1000 to 100)
                         amount = amount / 100
+                    
+                    # Fallback: If amount is still 0 or missing, calculate from subscription plan
+                    if not amount or amount == 0:
+                        plan = subscription.get("plan")
+                        billing = subscription.get("billing_interval", "monthly")
+                        plan_prices = {
+                            "starter": {"monthly": 15.0, "annual": 12.0},
+                            "professional": {"monthly": 30.0, "annual": 24.0},
+                            "business": {"monthly": 50.0, "annual": 40.0},
+                            "enterprise": {"monthly": 100.0, "annual": 80.0}
+                        }
+                        amount = plan_prices.get(plan, {}).get(billing, 0.0)
+                        logger.info(f"💰 Amount was 0, calculated from plan: ${amount} for {plan} ({billing})")
                     
                     tx_doc = {
                         "transaction_id": payment_id,
@@ -1521,8 +1539,21 @@ async def sync_invoices_from_dodo(current_user: dict = Depends(get_current_user)
                                     amount = invoice_data.get("amount")
                                 
                                 # Convert amount from cents to dollars if needed
-                                if amount and amount > 1000:  # Likely in cents
+                                if amount and amount > 100:  # Likely in cents (changed from 1000 to 100)
                                     amount = amount / 100
+                                
+                                # Fallback: If amount is still 0 or missing, calculate from subscription plan
+                                if not amount or amount == 0:
+                                    plan = subscription.get("plan")
+                                    billing = subscription.get("billing_interval", "monthly")
+                                    plan_prices = {
+                                        "starter": {"monthly": 15.0, "annual": 12.0},
+                                        "professional": {"monthly": 30.0, "annual": 24.0},
+                                        "business": {"monthly": 50.0, "annual": 40.0},
+                                        "enterprise": {"monthly": 100.0, "annual": 80.0}
+                                    }
+                                    amount = plan_prices.get(plan, {}).get(billing, 0.0)
+                                    logger.info(f"💰 Amount was 0, calculated from plan: ${amount} for {plan} ({billing})")
                                 
                                 tx_doc = {
                                     "transaction_id": payment_id,
@@ -1782,11 +1813,32 @@ async def get_customer_invoices(current_user: dict = Depends(get_current_user)):
                                                     invoice_url = invoice_pdf_url
                                                     invoice_data = {"pdf_url": invoice_pdf_url}
                                             
+                                            # Calculate amount with fallback
+                                            invoice_amount = payment.get("amount", 0.0)
+                                            if invoice_data and invoice_data.get("amount"):
+                                                invoice_amount = invoice_data.get("amount")
+                                            
+                                            # Convert from cents if needed
+                                            if invoice_amount and invoice_amount > 100:
+                                                invoice_amount = invoice_amount / 100
+                                            
+                                            # Fallback: Calculate from subscription plan if amount is 0
+                                            if not invoice_amount or invoice_amount == 0:
+                                                plan = subscription.get("plan")
+                                                billing = subscription.get("billing_interval", "monthly")
+                                                plan_prices = {
+                                                    "starter": {"monthly": 15.0, "annual": 12.0},
+                                                    "professional": {"monthly": 30.0, "annual": 24.0},
+                                                    "business": {"monthly": 50.0, "annual": 40.0},
+                                                    "enterprise": {"monthly": 100.0, "annual": 80.0}
+                                                }
+                                                invoice_amount = plan_prices.get(plan, {}).get(billing, 0.0)
+                                            
                                             invoices.append({
                                                 "invoice_id": payment_id,
                                                 "payment_id": payment_id,
                                                 "subscription_id": subscription_id,
-                                                "amount": payment.get("amount", invoice_data.get("amount", 0.0) if invoice_data else 0.0),
+                                                "amount": float(invoice_amount) if invoice_amount else 0.0,
                                                 "currency": payment.get("currency", "usd"),
                                                 "status": payment.get("status", "succeeded"),
                                                 "package_id": subscription.get("plan"),
