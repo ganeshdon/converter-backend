@@ -16,6 +16,8 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import httpx
+import asyncio
+import resend
 
 from dodo_payments import get_dodo_client, get_product_id, get_dodo_api_base_url
 from models import PaymentSessionRequest, PaymentSessionResponse
@@ -24,6 +26,12 @@ from auth import verify_jwt_token
 # Load environment variables
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
+
+# Email configuration (Resend)
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev")
+RESEND_FROM_NAME = os.getenv("RESEND_FROM_NAME", "Bank Statement Converter")
+ENTERPRISE_CONTACT_EMAIL = "info@yourbankstatementconverter.com"
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -314,10 +322,39 @@ async def check_subscription_status(subscription_id: str, current_user: dict = D
                     "enterprise": -1  # -1 means unlimited
                 }
                 pages_limit = pages_limit_map.get(plan, 400)
-                pages_remaining = pages_limit if pages_limit != -1 else -1
+                new_plan_pages = pages_limit if pages_limit != -1 else -1
                 
                 # Get billing_interval from subscription
                 billing_interval = db_subscription.get("billing_interval", "monthly")
+                
+                # Get current user to check for existing subscription and pages
+                user = await db.users.find_one({"_id": user_id})
+                current_plan = user.get("subscription_tier") if user else None
+                current_pages_remaining = user.get("pages_remaining", 0) if user else 0
+                current_pages_limit = user.get("pages_limit", 0) if user else 0
+                
+                # Check if this is an upgrade (different plan) or first subscription
+                is_upgrade = current_plan and current_plan != plan and current_plan != "daily_free"
+                is_first_subscription = not current_plan or current_plan == "daily_free"
+                
+                # Calculate new pages_remaining and pages_limit
+                if new_plan_pages == -1:
+                    # Enterprise plan - unlimited (always set to unlimited)
+                    pages_remaining = -1
+                    pages_limit = -1
+                    logger.info(f"Enterprise plan: Setting pages to unlimited")
+                elif is_upgrade and current_pages_remaining > 0 and current_pages_remaining != -1:
+                    # User is upgrading: add new plan's pages to existing pages
+                    # Only add if current pages are not unlimited (-1)
+                    pages_remaining = current_pages_remaining + new_plan_pages
+                    # Also update pages_limit to reflect the total available pages
+                    pages_limit = current_pages_limit + new_plan_pages
+                    logger.info(f"Upgrade detected: Adding {new_plan_pages} pages to existing {current_pages_remaining} pages = {pages_remaining} total (limit: {pages_limit})")
+                else:
+                    # First subscription, same plan, or upgrading from unlimited: use new plan's pages
+                    pages_remaining = new_plan_pages
+                    pages_limit = new_plan_pages
+                    logger.info(f"First subscription or same plan: Setting pages to {pages_remaining} (limit: {pages_limit})")
                 
                 # Update user with subscription details
                 await db.users.update_one(
@@ -533,10 +570,39 @@ async def handle_subscription_active(data: dict):
             "enterprise": -1  # -1 means unlimited
         }
         pages_limit = pages_limit_map.get(plan, 400)
-        pages_remaining = pages_limit if pages_limit != -1 else -1
+        new_plan_pages = pages_limit if pages_limit != -1 else -1
         
         # Get billing_interval from subscription
         billing_interval = subscription.get("billing_interval", "monthly")
+        
+        # Get current user to check for existing subscription and pages
+        user = await db.users.find_one({"_id": subscription["user_id"]})
+        current_plan = user.get("subscription_tier") if user else None
+        current_pages_remaining = user.get("pages_remaining", 0) if user else 0
+        current_pages_limit = user.get("pages_limit", 0) if user else 0
+        
+        # Check if this is an upgrade (different plan) or first subscription
+        is_upgrade = current_plan and current_plan != plan and current_plan != "daily_free"
+        is_first_subscription = not current_plan or current_plan == "daily_free"
+        
+        # Calculate new pages_remaining and pages_limit
+        if new_plan_pages == -1:
+            # Enterprise plan - unlimited (always set to unlimited)
+            pages_remaining = -1
+            pages_limit = -1
+            logger.info(f"Enterprise plan: Setting pages to unlimited")
+        elif is_upgrade and current_pages_remaining > 0 and current_pages_remaining != -1:
+            # User is upgrading: add new plan's pages to existing pages
+            # Only add if current pages are not unlimited (-1)
+            pages_remaining = current_pages_remaining + new_plan_pages
+            # Also update pages_limit to reflect the total available pages
+            pages_limit = current_pages_limit + new_plan_pages
+            logger.info(f"Upgrade detected: Adding {new_plan_pages} pages to existing {current_pages_remaining} pages = {pages_remaining} total (limit: {pages_limit})")
+        else:
+            # First subscription, same plan, or upgrading from unlimited: use new plan's pages
+            pages_remaining = new_plan_pages
+            pages_limit = new_plan_pages
+            logger.info(f"First subscription or same plan: Setting pages to {pages_remaining} (limit: {pages_limit})")
         
         await db.users.update_one(
             {"_id": subscription["user_id"]},
@@ -2023,7 +2089,7 @@ async def enterprise_contact(request: Request):
         
         # Send email notification
         try:
-            send_enterprise_contact_email(contact_data)
+            await send_enterprise_contact_email(contact_data)
         except Exception as email_error:
             logger.error(f"Failed to send email notification: {str(email_error)}")
             # Don't fail the request if email fails
@@ -2037,44 +2103,167 @@ async def enterprise_contact(request: Request):
         raise HTTPException(status_code=500, detail="Failed to process contact form")
 
 
-def send_enterprise_contact_email(contact_data: dict):
+async def send_enterprise_contact_email(contact_data: dict):
     """
-    Send email notification for enterprise contact form
-    This is a simple implementation - you may want to use a proper email service
+    Send email notification for enterprise contact form using Resend
     """
     try:
+        # If Resend API key is not configured, log the email instead
+        if not RESEND_API_KEY:
+            logger.warning(f"Resend API key not configured. Enterprise contact form submission from {contact_data['email']}")
+            logger.info(f"To enable email sending, configure RESEND_API_KEY environment variable")
+            logger.info(f"Email would be sent to: {ENTERPRISE_CONTACT_EMAIL}")
+            logger.info(f"Email content:\n{format_enterprise_contact_email_body(contact_data)}")
+            return False
+        
+        # Validate API key format
+        if not RESEND_API_KEY.startswith('re_'):
+            logger.error(f"Invalid Resend API key format. API key should start with 're_'. Current key starts with: {RESEND_API_KEY[:3] if len(RESEND_API_KEY) >= 3 else 'N/A'}")
+            return False
+        
+        # Log configuration
+        logger.info(f"Attempting to send enterprise contact email to {ENTERPRISE_CONTACT_EMAIL}")
+        logger.info(f"Using FROM email: {RESEND_FROM_EMAIL}")
+        
+        # Set Resend API key
+        resend.api_key = RESEND_API_KEY
+        
         # Email content
         subject = f"Enterprise Inquiry from {contact_data['company_name']}"
-        body = f"""
+        html_body = format_enterprise_contact_email_html(contact_data)
+        text_body = format_enterprise_contact_email_body(contact_data)
+        
+        # Send email using Resend
+        def send_sync():
+            try:
+                params = {
+                    "from": f"{RESEND_FROM_NAME} <{RESEND_FROM_EMAIL}>",
+                    "to": [ENTERPRISE_CONTACT_EMAIL],
+                    "subject": subject,
+                    "html": html_body,
+                    "text": text_body,
+                }
+                
+                logger.info(f"Sending email via Resend with params: from={RESEND_FROM_EMAIL}, to={ENTERPRISE_CONTACT_EMAIL}")
+                result = resend.Emails.send(params)
+                
+                # Log the full result for debugging
+                logger.info(f"Resend API response: {result}")
+                
+                # Resend returns a dict with 'id' if successful
+                if result and isinstance(result, dict):
+                    if result.get('id'):
+                        logger.info(f"Resend email sent successfully. Email ID: {result.get('id')}")
+                        return True
+                    elif result.get('error'):
+                        error_msg = result.get('error', {}).get('message', 'Unknown error')
+                        logger.error(f"Resend API error: {error_msg}")
+                        logger.error(f"Full error response: {result}")
+                        return False
+                    else:
+                        logger.error(f"Resend returned unexpected response (no 'id' or 'error' field): {result}")
+                        return False
+                else:
+                    logger.error(f"Resend returned unexpected response type: {type(result)}, value: {result}")
+                    return False
+            except Exception as e:
+                error_msg = str(e)
+                error_type = type(e).__name__
+                logger.error(f"Exception sending email via Resend: {error_type}: {error_msg}")
+                logger.exception(e)
+                
+                # Check for common error patterns
+                if 'unauthorized' in error_msg.lower() or '401' in error_msg:
+                    logger.error("Possible issue: Invalid Resend API key or API key not authorized")
+                elif 'domain' in error_msg.lower() or 'from' in error_msg.lower():
+                    logger.error(f"Possible issue: FROM email ({RESEND_FROM_EMAIL}) might not be verified in Resend")
+                elif 'rate limit' in error_msg.lower():
+                    logger.error("Possible issue: Rate limit exceeded for Resend API")
+                
+                return False
+        
+        # Run in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        success = await loop.run_in_executor(None, send_sync)
+        
+        if success:
+            logger.info(f"Enterprise contact email sent successfully to {ENTERPRISE_CONTACT_EMAIL} via Resend")
+        else:
+            logger.error(f"Failed to send enterprise contact email to {ENTERPRISE_CONTACT_EMAIL} via Resend")
+        
+        return success
+        
+    except Exception as e:
+        logger.error(f"Error in send_enterprise_contact_email: {str(e)}")
+        logger.exception(e)
+        return False
+
+
+def format_enterprise_contact_email_html(contact_data: dict) -> str:
+    """Format enterprise contact email as HTML"""
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    </head>
+    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+            <h1 style="color: white; margin: 0;">New Enterprise Inquiry</h1>
+        </div>
+        <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px;">
+            <h2 style="color: #667eea; margin-top: 0;">Contact Information</h2>
+            <table style="width: 100%; border-collapse: collapse;">
+                <tr>
+                    <td style="padding: 8px 0; font-weight: bold; width: 150px;">Name:</td>
+                    <td style="padding: 8px 0;">{contact_data['name']}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 0; font-weight: bold;">Company:</td>
+                    <td style="padding: 8px 0;">{contact_data['company_name']}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 0; font-weight: bold;">Email:</td>
+                    <td style="padding: 8px 0;"><a href="mailto:{contact_data['email']}">{contact_data['email']}</a></td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 0; font-weight: bold;">Phone:</td>
+                    <td style="padding: 8px 0;"><a href="tel:{contact_data['phone']}">{contact_data['phone']}</a></td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 0; font-weight: bold;">Website:</td>
+                    <td style="padding: 8px 0;">{contact_data.get('website', 'N/A')}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 0; font-weight: bold;">Submitted:</td>
+                    <td style="padding: 8px 0;">{contact_data['submitted_at']}</td>
+                </tr>
+            </table>
+            <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+            <h2 style="color: #667eea;">Message</h2>
+            <div style="background: white; padding: 15px; border-left: 4px solid #667eea; margin: 15px 0;">
+                <p style="white-space: pre-wrap; margin: 0;">{contact_data['message']}</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+
+def format_enterprise_contact_email_body(contact_data: dict) -> str:
+    """Format enterprise contact email as plain text"""
+    return f"""
 New Enterprise Contact Form Submission
 
+Contact Information:
 Name: {contact_data['name']}
 Company: {contact_data['company_name']}
-Website: {contact_data.get('website', 'N/A')}
 Email: {contact_data['email']}
 Phone: {contact_data['phone']}
+Website: {contact_data.get('website', 'N/A')}
+Submitted at: {contact_data['submitted_at']}
 
 Message:
 {contact_data['message']}
-
-Submitted at: {contact_data['submitted_at']}
 """
-        
-        # Create email message
-        msg = MIMEMultipart()
-        msg['From'] = "noreply@yourbankstatementconverter.com"
-        msg['To'] = "info@yourbankstatementconverter.com"
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'plain'))
-        
-        # Note: This is a basic implementation
-        # In production, you should use a proper email service like SendGrid, AWS SES, etc.
-        logger.info(f"Enterprise contact email prepared for: {contact_data['email']}")
-        logger.info(f"Email body:\n{body}")
-        
-        # For now, just log the email
-        # You can implement actual SMTP sending or use an email service
-        
-    except Exception as e:
-        logger.error(f"Error sending enterprise contact email: {str(e)}")
-        raise
