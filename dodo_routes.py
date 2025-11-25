@@ -424,30 +424,68 @@ async def dodo_webhook(request: Request):
         
         # Handle subscription.active event
         if event_type == "subscription.active":
-            await handle_subscription_active(event_data)
+            try:
+                await handle_subscription_active(event_data)
+                logger.info(f"Successfully handled subscription.active event")
+            except Exception as e:
+                logger.error(f"Error handling subscription.active: {str(e)}")
+                logger.exception(e)
+                raise HTTPException(status_code=500, detail=f"Failed to process subscription.active: {str(e)}")
         
         # Handle subscription.renewed event
         elif event_type == "subscription.renewed":
-            await handle_subscription_renewed(event_data)
+            try:
+                await handle_subscription_renewed(event_data)
+                logger.info(f"Successfully handled subscription.renewed event")
+            except Exception as e:
+                logger.error(f"Error handling subscription.renewed: {str(e)}")
+                logger.exception(e)
+                raise HTTPException(status_code=500, detail=f"Failed to process subscription.renewed: {str(e)}")
         
         # Handle subscription.on_hold event
         elif event_type == "subscription.on_hold":
-            await handle_subscription_on_hold(event_data)
+            try:
+                await handle_subscription_on_hold(event_data)
+                logger.info(f"Successfully handled subscription.on_hold event")
+            except Exception as e:
+                logger.error(f"Error handling subscription.on_hold: {str(e)}")
+                logger.exception(e)
+                raise HTTPException(status_code=500, detail=f"Failed to process subscription.on_hold: {str(e)}")
         
         # Handle subscription.cancelled event
         elif event_type == "subscription.cancelled":
-            await handle_subscription_cancelled(event_data)
+            try:
+                await handle_subscription_cancelled(event_data)
+                logger.info(f"Successfully handled subscription.cancelled event")
+            except Exception as e:
+                logger.error(f"Error handling subscription.cancelled: {str(e)}")
+                logger.exception(e)
+                raise HTTPException(status_code=500, detail=f"Failed to process subscription.cancelled: {str(e)}")
         
         # Handle subscription.failed event
         elif event_type == "subscription.failed":
-            await handle_subscription_failed(event_data)
+            try:
+                await handle_subscription_failed(event_data)
+                logger.info(f"Successfully handled subscription.failed event")
+            except Exception as e:
+                logger.error(f"Error handling subscription.failed: {str(e)}")
+                logger.exception(e)
+                raise HTTPException(status_code=500, detail=f"Failed to process subscription.failed: {str(e)}")
         
         # Handle payment.succeeded event
         elif event_type == "payment.succeeded":
-            await handle_payment_succeeded(event_data)
+            try:
+                await handle_payment_succeeded(event_data)
+                logger.info(f"Successfully handled payment.succeeded event")
+            except Exception as e:
+                logger.error(f"Error handling payment.succeeded: {str(e)}")
+                logger.exception(e)
+                raise HTTPException(status_code=500, detail=f"Failed to process payment.succeeded: {str(e)}")
         
         else:
             logger.warning(f"Unhandled webhook event type: {event_type}")
+            # Return success for unhandled events so Dodo doesn't retry
+            return {"status": "success", "event_type": event_type, "message": "Event type not handled"}
         
         logger.info(f"Successfully processed webhook event: {event_type}")
         return {"status": "success", "event_type": event_type}
@@ -456,6 +494,7 @@ async def dodo_webhook(request: Request):
         raise
     except Exception as e:
         logger.error(f"Error processing webhook: {str(e)}")
+        logger.exception(e)  # Log full traceback
         raise HTTPException(status_code=500, detail=f"Webhook processing failed: {str(e)}")
 
 
@@ -565,10 +604,22 @@ async def handle_subscription_active(data: dict):
                         "updated_at": datetime.utcnow()
                     }
                     
-                    await db.payment_transactions.insert_one(tx_doc)
+                    logger.info(f"Inserting invoice for subscription activation: {tx_doc}")
+                    result = await db.payment_transactions.insert_one(tx_doc)
+                    logger.info(f"Insert result: {result.inserted_id}")
                     logger.info(f"Recorded invoice for subscription activation: {subscription_id}, user: {subscription['user_id']}")
+                    
+                    # Verify it was saved
+                    verify = await db.payment_transactions.find_one({"_id": result.inserted_id})
+                    if verify:
+                        logger.info(f"Verified: Invoice saved successfully in database")
+                    else:
+                        logger.error(f"ERROR: Invoice was not saved!")
+                        raise Exception("Invoice was not saved to database")
             except Exception as e:
                 logger.error(f"Failed to record invoice for subscription activation: {e}")
+                logger.exception(e)
+                raise  # Re-raise to let webhook handler know it failed
 
 
 async def handle_subscription_renewed(data: dict):
@@ -674,10 +725,22 @@ async def handle_subscription_renewed(data: dict):
                         "updated_at": datetime.utcnow()
                     }
                 
-                await db.payment_transactions.insert_one(tx_doc)
-                logger.info(f"Recorded invoice for subscription renewal: {subscription_id}, user: {subscription['user_id']}, amount: ${invoice_amount}")
+                    logger.info(f"Inserting invoice for subscription renewal: {tx_doc}")
+                    result = await db.payment_transactions.insert_one(tx_doc)
+                    logger.info(f"Insert result: {result.inserted_id}")
+                    logger.info(f"Recorded invoice for subscription renewal: {subscription_id}, user: {subscription['user_id']}, amount: ${invoice_amount}")
+                    
+                    # Verify it was saved
+                    verify = await db.payment_transactions.find_one({"_id": result.inserted_id})
+                    if verify:
+                        logger.info(f"Verified: Invoice saved successfully in database")
+                    else:
+                        logger.error(f"ERROR: Invoice was not saved!")
+                        raise Exception("Invoice was not saved to database")
         except Exception as e:
             logger.error(f"Failed to record invoice for subscription renewal: {e}")
+            logger.exception(e)
+            raise  # Re-raise to let webhook handler know it failed
 
 
 async def handle_subscription_on_hold(data: dict):
@@ -751,8 +814,11 @@ async def handle_payment_succeeded(data: dict):
     subscription_id = data.get("subscription_id")
     amount = data.get("amount")
     
-    logger.info(f"Payment succeeded: {payment_id} for subscription {subscription_id}, amount: {amount}")
-    logger.info(f"Payment webhook data: {data}")  # Debug log
+    logger.info(f"=== Processing payment.succeeded ===")
+    logger.info(f"Payment ID: {payment_id}")
+    logger.info(f"Subscription ID: {subscription_id}")
+    logger.info(f"Amount: {amount}")
+    logger.info(f"Full webhook data: {data}")
     
     # Record payment transaction
     try:
@@ -797,20 +863,48 @@ async def handle_payment_succeeded(data: dict):
 
         if not user_id:
             logger.error(f"Could not find user_id for payment {payment_id}. Subscription: {subscription_id}, Metadata: {metadata}")
-            # Still record the transaction but log the issue
-            user_id = "unknown"
+            logger.error(f"Full webhook data structure: {data}")
+            # Try one more time - check if subscription_id exists at all
+            if subscription_id:
+                all_subs = await db.subscriptions.find({"subscription_id": subscription_id}).to_list(length=10)
+                logger.error(f"Found {len(all_subs)} subscriptions with subscription_id {subscription_id}")
+                if all_subs:
+                    logger.error(f"Subscription data: {all_subs[0]}")
+            raise ValueError(f"Could not find user_id for payment {payment_id}. Cannot create invoice without user_id.")
 
         # Get amount - use from webhook or calculate from plan
-        if not amount and package_id:
-            plan_prices = {
-                "starter": {"monthly": 15.0, "annual": 12.0},
-                "professional": {"monthly": 30.0, "annual": 24.0},
-                "business": {"monthly": 50.0, "annual": 40.0},
-                "enterprise": {"monthly": 100.0, "annual": 80.0}
-            }
-            price_map = plan_prices.get(package_id, {})
-            amount = price_map.get(billing_interval or "monthly", price_map.get("monthly", 0.0))
-            logger.info(f"Calculated amount from plan: {amount} for {package_id} ({billing_interval})")
+        if not amount:
+            if package_id:
+                plan_prices = {
+                    "starter": {"monthly": 15.0, "annual": 12.0},
+                    "professional": {"monthly": 30.0, "annual": 24.0},
+                    "business": {"monthly": 50.0, "annual": 40.0},
+                    "enterprise": {"monthly": 100.0, "annual": 80.0}
+                }
+                price_map = plan_prices.get(package_id, {})
+                amount = price_map.get(billing_interval or "monthly", price_map.get("monthly", 0.0))
+                logger.info(f"Calculated amount from plan: {amount} for {package_id} ({billing_interval})")
+            elif subscription_id:
+                # Try to get amount from subscription
+                sub = await db.subscriptions.find_one({"subscription_id": subscription_id})
+                if sub:
+                    plan = sub.get("plan")
+                    billing = sub.get("billing_interval", "monthly")
+                    plan_prices = {
+                        "starter": {"monthly": 15.0, "annual": 12.0},
+                        "professional": {"monthly": 30.0, "annual": 24.0},
+                        "business": {"monthly": 50.0, "annual": 40.0},
+                        "enterprise": {"monthly": 100.0, "annual": 80.0}
+                    }
+                    price_map = plan_prices.get(plan, {})
+                    amount = price_map.get(billing, price_map.get("monthly", 0.0))
+                    package_id = plan  # Set package_id from subscription
+                    billing_interval = billing  # Set billing_interval from subscription
+                    logger.info(f"Calculated amount from subscription: {amount} for {plan} ({billing})")
+        
+        if not amount or amount == 0:
+            logger.warning(f"Amount is 0 or None for payment {payment_id}. This might indicate an issue.")
+            # Don't fail, but log warning
 
         # Ensure user_id is stored as string for consistent querying
         # Convert ObjectId to string if needed
@@ -845,12 +939,433 @@ async def handle_payment_succeeded(data: dict):
         
         if existing:
             logger.info(f"Payment transaction already exists: {payment_id}")
+            logger.info(f"Existing transaction: {existing}")
         else:
-            await db.payment_transactions.insert_one(tx_doc)
-            logger.info(f"Recorded payment transaction for user: {user_id}, tx: {tx_doc['transaction_id']}, amount: ${amount}")
+            logger.info(f"Inserting payment transaction: {tx_doc}")
+            result = await db.payment_transactions.insert_one(tx_doc)
+            logger.info(f"Insert result: {result.inserted_id}")
+            logger.info(f"Successfully recorded payment transaction for user: {user_id_str}, tx: {tx_doc['transaction_id']}, amount: ${amount}")
+            
+            # Verify it was saved
+            verify = await db.payment_transactions.find_one({"_id": result.inserted_id})
+            if verify:
+                logger.info(f"Verified: Invoice saved successfully in database")
+            else:
+                logger.error(f"ERROR: Invoice was not saved! Insert returned {result.inserted_id} but cannot find it in DB")
+                raise Exception("Invoice was not saved to database")
     except Exception as e:
         logger.error(f"Failed to record payment transaction: {e}")
         logger.exception(e)  # Log full traceback
+        raise  # Re-raise to let webhook handler know it failed
+
+
+@router.get("/dodo/webhook-test")
+async def test_webhook_endpoint():
+    """
+    Test endpoint to verify webhook URL is accessible
+    Returns success if endpoint is reachable
+    """
+    return {
+        "status": "success",
+        "message": "Webhook endpoint is accessible",
+        "endpoint": "/api/webhook/dodo",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+
+@router.post("/dodo/fetch-and-save-invoice")
+async def fetch_and_save_invoice_after_payment(
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Fetch invoice from Dodo API after payment completion and save to database
+    This is called directly after payment success, not relying on webhooks
+    Accepts subscription_id as query parameter: ?subscription_id=sub_xxx
+    """
+    try:
+        # Get subscription_id from query parameters
+        subscription_id = request.query_params.get("subscription_id")
+        
+        if not subscription_id:
+            raise HTTPException(status_code=400, detail="subscription_id query parameter is required")
+        
+        user_id = current_user.get("user_id")
+        
+        # Convert user_id to string
+        from bson import ObjectId
+        if isinstance(user_id, ObjectId):
+            user_id_str = str(user_id)
+        else:
+            user_id_str = str(user_id)
+        
+        # Get subscription from database
+        subscription = await db.subscriptions.find_one({
+            "subscription_id": subscription_id
+        })
+        
+        if not subscription:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+        
+        # Verify subscription belongs to user
+        sub_user_id = subscription.get("user_id")
+        if isinstance(sub_user_id, ObjectId):
+            sub_user_id_str = str(sub_user_id)
+        else:
+            sub_user_id_str = str(sub_user_id)
+        
+        if sub_user_id_str != user_id_str:
+            raise HTTPException(status_code=403, detail="Subscription does not belong to user")
+        
+        api_key = os.getenv("DODO_PAYMENTS_API_KEY")
+        if not api_key:
+            raise HTTPException(status_code=500, detail="DODO_PAYMENTS_API_KEY not configured")
+        
+        dodo_base_url = get_dodo_api_base_url()
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        logger.info(f"📄 FETCH INVOICE ENDPOINT CALLED - subscription: {subscription_id}, user: {user_id_str}")
+        logger.info(f"📋 Subscription data: plan={subscription.get('plan')}, billing={subscription.get('billing_interval')}, status={subscription.get('status')}")
+        
+        saved_count = 0
+        payments_list = []
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Method 1: Try to get subscription details from Dodo API (might have payment info)
+            try:
+                subscription_url = f"{dodo_base_url}/subscriptions/{subscription_id}"
+                subscription_response = await client.get(subscription_url, headers=headers)
+                
+                if subscription_response.status_code == 200:
+                    subscription_data = subscription_response.json()
+                    logger.info(f"Got subscription data from Dodo API")
+                    
+                    # Check if subscription has payment information embedded
+                    if isinstance(subscription_data, dict):
+                        data_obj = subscription_data.get("data", subscription_data)
+                        # Only use actual payment IDs (pay_ prefix), NOT payment_method_id (pm_ prefix)
+                        payment_id = data_obj.get("payment_id") or data_obj.get("last_payment_id")
+                        
+                        # Validate that it's a payment ID, not a payment method ID
+                        if payment_id and not payment_id.startswith("pm_"):
+                            # Create a payment-like object from subscription
+                            payments_list.append({
+                                "id": payment_id,
+                                "payment_id": payment_id,
+                                "subscription_id": subscription_id,
+                                "amount": data_obj.get("recurring_pre_tax_amount", 0),
+                                "currency": data_obj.get("currency", "usd"),
+                                "status": "succeeded",
+                                "created_at": data_obj.get("created_at") or data_obj.get("previous_billing_date")
+                            })
+                            logger.info(f"Found payment_id from subscription: {payment_id}")
+                        elif payment_id and payment_id.startswith("pm_"):
+                            logger.warning(f"Ignoring payment_method_id (pm_): {payment_id}. Need actual payment_id (pay_)")
+            except Exception as e:
+                logger.warning(f"Could not fetch subscription details: {str(e)}")
+            
+            # Method 2: Get payments by subscription_id (FIX: Check "items" not "data")
+            if not payments_list:
+                try:
+                    payments_url = f"{dodo_base_url}/payments"
+                    params = {"subscription_id": subscription_id}
+                    
+                    payments_response = await client.get(payments_url, headers=headers, params=params)
+                    
+                    if payments_response.status_code == 200:
+                        payments_data = payments_response.json()
+                        # FIX: Check "items" first, then "data" as fallback
+                        if isinstance(payments_data, dict):
+                            payments_list = payments_data.get("items", []) or payments_data.get("data", [])
+                        elif isinstance(payments_data, list):
+                            payments_list = payments_data
+                        else:
+                            payments_list = []
+                        
+                        logger.info(f"Found {len(payments_list)} payments from payments API")
+                    elif payments_response.status_code != 200:
+                        logger.warning(f"Payments API returned {payments_response.status_code}: {payments_response.text}")
+                except Exception as e:
+                    logger.warning(f"Could not fetch payments by subscription_id: {str(e)}")
+            
+            # Method 3: Try by customer_id if available
+            if not payments_list and subscription.get("customer_id"):
+                try:
+                    customer_id = subscription.get("customer_id")
+                    payments_url = f"{dodo_base_url}/payments"
+                    params = {"customer_id": customer_id}
+                    
+                    payments_response = await client.get(payments_url, headers=headers, params=params)
+                    
+                    if payments_response.status_code == 200:
+                        payments_data = payments_response.json()
+                        if isinstance(payments_data, dict):
+                            customer_payments = payments_data.get("items", []) or payments_data.get("data", [])
+                        elif isinstance(payments_data, list):
+                            customer_payments = payments_data
+                        else:
+                            customer_payments = []
+                        
+                        # Filter to only payments for this subscription
+                        payments_list = [p for p in customer_payments if p.get("subscription_id") == subscription_id]
+                        logger.info(f"Found {len(payments_list)} payments from customer_id")
+                except Exception as e:
+                    logger.warning(f"Could not fetch payments by customer_id: {str(e)}")
+            
+            # Method 4: If still no payments, create invoice from subscription data
+            if not payments_list:
+                logger.info(f"No payments found via API, creating invoice from subscription data")
+                
+                # Check if invoice already exists
+                existing = await db.payment_transactions.find_one({
+                    "subscription_id": subscription_id,
+                    "user_id": user_id_str,
+                    "payment_status": {"$in": ["succeeded", "completed"]}
+                })
+                
+                if existing:
+                    logger.info(f"Invoice already exists for subscription {subscription_id}")
+                    return {
+                        "status": "success",
+                        "message": "Invoice already exists",
+                        "invoices_saved": 0,
+                        "subscription_id": subscription_id
+                    }
+                
+                # Calculate amount from subscription
+                subscription_amount = subscription.get("recurring_pre_tax_amount")
+                plan = subscription.get("plan")
+                billing = subscription.get("billing_interval", "monthly")
+                
+                logger.info(f"💰 Calculating amount - plan: {plan}, billing: {billing}, recurring_pre_tax_amount: {subscription_amount}")
+                
+                if subscription_amount and subscription_amount > 100:
+                    # Convert from cents to dollars
+                    amount = subscription_amount / 100
+                    logger.info(f"💰 Using amount from subscription: ${amount}")
+                else:
+                    # Calculate from plan
+                    plan_prices = {
+                        "starter": {"monthly": 15.0, "annual": 12.0},
+                        "professional": {"monthly": 30.0, "annual": 24.0},
+                        "business": {"monthly": 50.0, "annual": 40.0},
+                        "enterprise": {"monthly": 100.0, "annual": 80.0}
+                    }
+                    amount = plan_prices.get(plan, {}).get(billing, 0.0)
+                    logger.info(f"💰 Calculated amount from plan: ${amount}")
+                
+                # Create invoice record from subscription
+                tx_doc = {
+                    "transaction_id": f"sub_{subscription_id}_{int(datetime.utcnow().timestamp())}",
+                    "payment_id": None,  # Will be updated when payment appears in API
+                    "subscription_id": subscription_id,
+                    "user_id": user_id_str,
+                    "package_id": subscription.get("plan"),
+                    "amount": float(amount) if amount else 0.0,
+                    "currency": subscription.get("currency", "usd").lower(),
+                    "payment_status": "succeeded",
+                    "subscription_status": subscription.get("status", "active"),
+                    "billing_interval": subscription.get("billing_interval", "monthly"),
+                    "payment_provider": "dodo",
+                    "invoice_url": None,
+                    "invoice_pdf_url": None,
+                    "invoice_number": None,
+                    "invoice_date": None,
+                    "metadata": {
+                        "created_from_subscription": True,
+                        "created_date": datetime.utcnow().isoformat(),
+                        "note": "Created from subscription data - payment_id will be updated when available"
+                    },
+                    "created_at": subscription.get("created_at") or subscription.get("activated_at") or datetime.utcnow(),
+                    "updated_at": datetime.utcnow()
+                }
+                
+                # Save to database
+                logger.info(f"💾 Saving invoice to database for subscription {subscription_id}, amount: {amount}")
+                result = await db.payment_transactions.insert_one(tx_doc)
+                logger.info(f"✅ Invoice saved to database with _id: {result.inserted_id}")
+                logger.info(f"Created invoice from subscription data, invoice ID: {result.inserted_id}")
+                
+                # Verify it was saved
+                verify = await db.payment_transactions.find_one({"_id": result.inserted_id})
+                if verify:
+                    saved_count = 1
+                    logger.info(f"Verified: Invoice saved successfully from subscription data")
+                    return {
+                        "status": "success",
+                        "message": "Invoice created from subscription data (payment will be linked when available)",
+                        "invoices_saved": 1,
+                        "subscription_id": subscription_id
+                    }
+                else:
+                    logger.error(f"ERROR: Invoice was not saved")
+                    raise HTTPException(status_code=500, detail="Failed to save invoice to database")
+            
+            # Step 2: For each payment, fetch invoice and save to DB
+            for payment in payments_list:
+                payment_id = payment.get("id") or payment.get("payment_id")
+                if not payment_id:
+                    continue
+                
+                # Skip payment_method_id (pm_ prefix) - we need actual payment IDs
+                if payment_id.startswith("pm_"):
+                    logger.warning(f"Skipping payment_method_id: {payment_id}. Need actual payment_id (pay_ prefix)")
+                    continue
+                
+                # Check if invoice already exists
+                existing = await db.payment_transactions.find_one({
+                    "payment_id": payment_id,
+                    "subscription_id": subscription_id
+                })
+                
+                if existing:
+                    logger.info(f"Invoice already exists for payment {payment_id}")
+                    continue
+                
+                # Fetch invoice from Dodo API - THIS IS THE KEY API CALL
+                invoice_data = None
+                invoice_pdf_url = None
+                invoice_url = None
+                invoice_number = None
+                invoice_date = None
+                
+                # First, check if payment object itself has invoice information
+                if payment.get("invoice_url") or payment.get("invoice_pdf_url"):
+                    invoice_pdf_url = payment.get("invoice_pdf_url") or payment.get("invoice_url")
+                    invoice_url = invoice_pdf_url
+                    logger.info(f"Found invoice URL in payment object: {invoice_pdf_url}")
+                
+                # Try to fetch from Dodo API
+                if not invoice_pdf_url:
+                    try:
+                        invoice_api_url = f"{dodo_base_url}/invoices/payments/{payment_id}"
+                        logger.info(f"Fetching invoice from Dodo API: {invoice_api_url}")
+                        invoice_response = await client.get(invoice_api_url, headers=headers, follow_redirects=True)
+                        
+                        if invoice_response.status_code == 200:
+                            content_type = invoice_response.headers.get("content-type", "")
+                            logger.info(f"Invoice API response content-type: {content_type}")
+                            
+                            if "application/json" in content_type:
+                                invoice_data = invoice_response.json()
+                                logger.info(f"Invoice API JSON response: {invoice_data}")
+                                
+                                # Handle nested data structure
+                                if isinstance(invoice_data, dict) and "data" in invoice_data:
+                                    invoice_data = invoice_data["data"]
+                                
+                                # Try multiple possible fields for invoice URL
+                                invoice_pdf_url = (
+                                    invoice_data.get("pdf_url") or 
+                                    invoice_data.get("invoice_pdf_url") or
+                                    invoice_data.get("invoice_url") or 
+                                    invoice_data.get("url") or
+                                    invoice_data.get("download_url") or
+                                    invoice_data.get("file_url")
+                                )
+                                
+                                invoice_url = invoice_data.get("invoice_url") or invoice_pdf_url
+                                invoice_number = invoice_data.get("invoice_number") or invoice_data.get("number")
+                                invoice_date = invoice_data.get("invoice_date") or invoice_data.get("date") or invoice_data.get("created_at")
+                                
+                                if invoice_pdf_url:
+                                    logger.info(f"✅ Found invoice URL from API response: {invoice_pdf_url}")
+                                else:
+                                    logger.warning(f"⚠️ No invoice URL found in API response, using constructed URL")
+                                    invoice_pdf_url = invoice_api_url
+                                    invoice_url = invoice_api_url
+                            else:
+                                # It's a PDF or redirect, use the final URL after redirects
+                                invoice_pdf_url = str(invoice_response.url)
+                                invoice_url = invoice_pdf_url
+                                invoice_data = {"pdf_url": invoice_pdf_url}
+                                logger.info(f"✅ Invoice is PDF/redirect, URL: {invoice_pdf_url}")
+                        elif invoice_response.status_code == 404:
+                            logger.warning(f"⚠️ Invoice not found for payment {payment_id} (404). Payment may not have invoice yet.")
+                            # Don't save a broken URL - leave it as None
+                            invoice_pdf_url = None
+                            invoice_url = None
+                        else:
+                            logger.warning(f"⚠️ Could not fetch invoice for payment {payment_id}: {invoice_response.status_code} - {invoice_response.text[:200]}")
+                            # Don't save a broken URL - leave it as None
+                            invoice_pdf_url = None
+                            invoice_url = None
+                    except Exception as api_error:
+                        logger.error(f"❌ Error fetching invoice from API: {str(api_error)}")
+                        # Don't save a broken URL
+                        invoice_pdf_url = None
+                        invoice_url = None
+                
+                # Prepare invoice document (only if we have invoice_pdf_url or want to save anyway)
+                try:
+                    amount = payment.get("amount", 0.0)
+                    if invoice_data and invoice_data.get("amount"):
+                        amount = invoice_data.get("amount")
+                    
+                    # Convert amount from cents to dollars if needed
+                    if amount and amount > 1000:  # Likely in cents
+                        amount = amount / 100
+                    
+                    tx_doc = {
+                        "transaction_id": payment_id,
+                        "payment_id": payment_id,
+                        "subscription_id": subscription_id,
+                        "user_id": user_id_str,
+                        "package_id": subscription.get("plan"),
+                        "amount": float(amount) if amount else 0.0,
+                        "currency": payment.get("currency", subscription.get("currency", "usd")).lower(),
+                        "payment_status": payment.get("status", "succeeded"),
+                        "subscription_status": subscription.get("status", "active"),
+                        "billing_interval": subscription.get("billing_interval", "monthly"),
+                        "payment_provider": "dodo",
+                        "invoice_url": invoice_url,
+                        "invoice_pdf_url": invoice_pdf_url,
+                        "invoice_number": invoice_number,
+                        "invoice_date": invoice_date,
+                        "metadata": {
+                            "fetched_from_api": True,
+                            "fetch_date": datetime.utcnow().isoformat(),
+                            "payment_data": payment,
+                            "invoice_fetched": True
+                        },
+                        "created_at": parse_datetime(payment.get("created_at")),
+                        "updated_at": datetime.utcnow()
+                    }
+                    
+                    # Save to database
+                    result = await db.payment_transactions.insert_one(tx_doc)
+                    logger.info(f"Saved invoice for payment {payment_id}, invoice ID: {result.inserted_id}")
+                    
+                    # Verify it was saved
+                    verify = await db.payment_transactions.find_one({"_id": result.inserted_id})
+                    if verify:
+                        saved_count += 1
+                        logger.info(f"Verified: Invoice saved successfully for payment {payment_id}")
+                    else:
+                        logger.error(f"ERROR: Invoice was not saved for payment {payment_id}")
+                
+                except Exception as invoice_error:
+                    logger.error(f"Error processing invoice for payment {payment_id}: {str(invoice_error)}")
+                    logger.exception(invoice_error)
+                    # Continue with next payment
+                    continue
+            
+            return {
+                "status": "success",
+                "message": f"Fetched and saved {saved_count} invoice(s)",
+                "invoices_saved": saved_count,
+                "subscription_id": subscription_id
+            }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching and saving invoice: {str(e)}")
+        logger.exception(e)
+        raise HTTPException(status_code=500, detail=f"Failed to fetch invoice: {str(e)}")
 
 
 @router.post("/dodo/sync-invoices")
@@ -909,13 +1424,24 @@ async def sync_invoices_from_dodo(current_user: dict = Depends(get_current_user)
                 
                 if payments_response.status_code == 200:
                     payments_data = payments_response.json()
-                    payments_list = payments_data.get("data", []) if isinstance(payments_data, dict) else (payments_data if isinstance(payments_data, list) else [])
+                    # FIX: Check "items" first, then "data" as fallback
+                    if isinstance(payments_data, dict):
+                        payments_list = payments_data.get("items", []) or payments_data.get("data", [])
+                    elif isinstance(payments_data, list):
+                        payments_list = payments_data
+                    else:
+                        payments_list = []
                     
                     logger.info(f"Found {len(payments_list)} payments for subscription {subscription_id}")
                     
                     for payment in payments_list:
                         payment_id = payment.get("id") or payment.get("payment_id")
                         if not payment_id:
+                            continue
+                        
+                        # Skip payment_method_id (pm_ prefix) - we need actual payment IDs
+                        if payment_id.startswith("pm_"):
+                            logger.warning(f"Skipping payment_method_id: {payment_id}. Need actual payment_id (pay_ prefix)")
                             continue
                         
                         # Check if we already have this payment in DB
@@ -929,54 +1455,105 @@ async def sync_invoices_from_dodo(current_user: dict = Depends(get_current_user)
                             continue
                         
                         # Fetch invoice for this payment
-                        try:
-                            invoice_url = f"{dodo_base_url}/invoices/payments/{payment_id}"
-                            invoice_response = await client.get(invoice_url, headers=headers)
-                            
-                            invoice_data = None
-                            if invoice_response.status_code == 200:
-                                # Check if response is JSON or PDF
-                                content_type = invoice_response.headers.get("content-type", "")
-                                if "application/json" in content_type:
-                                    invoice_data = invoice_response.json()
+                        invoice_data = None
+                        invoice_pdf_url = None
+                        invoice_url = None
+                        invoice_number = None
+                        invoice_date = None
+                        
+                        # First, check if payment object itself has invoice information
+                        if payment.get("invoice_url") or payment.get("invoice_pdf_url"):
+                            invoice_pdf_url = payment.get("invoice_pdf_url") or payment.get("invoice_url")
+                            invoice_url = invoice_pdf_url
+                            logger.info(f"Found invoice URL in payment object: {invoice_pdf_url}")
+                        
+                        # Try to fetch from Dodo API
+                        if not invoice_pdf_url:
+                            try:
+                                invoice_api_url = f"{dodo_base_url}/invoices/payments/{payment_id}"
+                                logger.info(f"Fetching invoice from Dodo API: {invoice_api_url}")
+                                invoice_response = await client.get(invoice_api_url, headers=headers, follow_redirects=True)
+                                
+                                if invoice_response.status_code == 200:
+                                    content_type = invoice_response.headers.get("content-type", "")
+                                    
+                                    if "application/json" in content_type:
+                                        invoice_data = invoice_response.json()
+                                        # Handle nested data structure
+                                        if isinstance(invoice_data, dict) and "data" in invoice_data:
+                                            invoice_data = invoice_data["data"]
+                                        
+                                        # Try multiple possible fields for invoice URL
+                                        invoice_pdf_url = (
+                                            invoice_data.get("pdf_url") or 
+                                            invoice_data.get("invoice_pdf_url") or
+                                            invoice_data.get("invoice_url") or 
+                                            invoice_data.get("url") or
+                                            invoice_data.get("download_url") or
+                                            invoice_data.get("file_url")
+                                        )
+                                        
+                                        invoice_url = invoice_data.get("invoice_url") or invoice_pdf_url
+                                        invoice_number = invoice_data.get("invoice_number") or invoice_data.get("number")
+                                        invoice_date = invoice_data.get("invoice_date") or invoice_data.get("date") or invoice_data.get("created_at")
+                                    else:
+                                        # It's a PDF or redirect, use the final URL after redirects
+                                        invoice_pdf_url = str(invoice_response.url)
+                                        invoice_url = invoice_pdf_url
+                                        invoice_data = {"pdf_url": invoice_pdf_url}
+                                elif invoice_response.status_code == 404:
+                                    logger.warning(f"Invoice not found for payment {payment_id} (404)")
+                                    invoice_pdf_url = None
+                                    invoice_url = None
                                 else:
-                                    # It's a PDF, we'll store the URL
-                                    invoice_data = {"pdf_url": invoice_url}
+                                    logger.warning(f"Could not fetch invoice for payment {payment_id}: {invoice_response.status_code}")
+                                    invoice_pdf_url = None
+                                    invoice_url = None
+                            except Exception as api_error:
+                                logger.error(f"Error fetching invoice from API: {str(api_error)}")
+                                invoice_pdf_url = None
+                                invoice_url = None
                             
                             # Store payment transaction/invoice in database
-                            amount = payment.get("amount", 0.0)
-                            if invoice_data and invoice_data.get("amount"):
-                                amount = invoice_data.get("amount")
+                            try:
+                                amount = payment.get("amount", 0.0)
+                                if invoice_data and invoice_data.get("amount"):
+                                    amount = invoice_data.get("amount")
+                                
+                                # Convert amount from cents to dollars if needed
+                                if amount and amount > 1000:  # Likely in cents
+                                    amount = amount / 100
+                                
+                                tx_doc = {
+                                    "transaction_id": payment_id,
+                                    "payment_id": payment_id,
+                                    "subscription_id": subscription_id,
+                                    "user_id": user_id_str,
+                                    "package_id": subscription.get("plan"),
+                                    "amount": float(amount) if amount else 0.0,
+                                    "currency": payment.get("currency", subscription.get("currency", "usd")).lower(),
+                                    "payment_status": payment.get("status", "succeeded"),
+                                    "subscription_status": subscription.get("status", "active"),
+                                    "billing_interval": subscription.get("billing_interval", "monthly"),
+                                    "payment_provider": "dodo",
+                                    "metadata": {
+                                        "synced_from_dodo": True,
+                                        "sync_date": datetime.utcnow().isoformat()
+                                    },
+                                    "invoice_url": invoice_url,
+                                    "invoice_pdf_url": invoice_pdf_url,
+                                    "invoice_number": invoice_number,
+                                    "invoice_date": invoice_date,
+                                    "created_at": parse_datetime(payment.get("created_at")),
+                                    "updated_at": datetime.utcnow()
+                                }
+                                
+                                await db.payment_transactions.insert_one(tx_doc)
+                                synced_count += 1
+                                logger.info(f"Synced payment {payment_id} for subscription {subscription_id}")
                             
-                            tx_doc = {
-                                "transaction_id": payment_id,
-                                "payment_id": payment_id,
-                                "subscription_id": subscription_id,
-                                "user_id": user_id_str,
-                                "package_id": subscription.get("plan"),
-                                "amount": amount,
-                                "currency": payment.get("currency", "usd"),
-                                "payment_status": payment.get("status", "succeeded"),
-                                "subscription_status": subscription.get("status", "active"),
-                                "billing_interval": subscription.get("billing_interval", "monthly"),
-                                "payment_provider": "dodo",
-                                "metadata": {
-                                    "synced_from_dodo": True,
-                                    "sync_date": datetime.utcnow().isoformat()
-                                },
-                                "invoice_url": invoice_data.get("invoice_url") if invoice_data else None,
-                                "invoice_pdf_url": invoice_data.get("pdf_url") if invoice_data else invoice_url,
-                                "invoice_number": invoice_data.get("invoice_number") if invoice_data else None,
-                                "created_at": parse_datetime(payment.get("created_at")),
-                                "updated_at": datetime.utcnow()
-                            }
-                            
-                            await db.payment_transactions.insert_one(tx_doc)
-                            synced_count += 1
-                            logger.info(f"Synced payment {payment_id} for subscription {subscription_id}")
-                            
-                        except Exception as invoice_error:
-                            logger.warning(f"Could not fetch invoice for payment {payment_id}: {str(invoice_error)}")
+                            except Exception as invoice_error:
+                                logger.warning(f"Could not fetch invoice for payment {payment_id}: {str(invoice_error)}")
                             # Still store the payment even if invoice fetch fails
                             try:
                                 tx_doc = {
@@ -1006,7 +1583,63 @@ async def sync_invoices_from_dodo(current_user: dict = Depends(get_current_user)
                 
             except Exception as e:
                 logger.error(f"Error fetching payments from Dodo API: {str(e)}")
-                raise HTTPException(status_code=500, detail=f"Failed to sync invoices: {str(e)}")
+                # Don't raise, try fallback instead
+            
+            # If no payments found, create invoice from subscription data
+            if synced_count == 0:
+                logger.info(f"No payments found via API, creating invoice from subscription data in sync")
+                
+                # Check if invoice already exists
+                existing = await db.payment_transactions.find_one({
+                    "subscription_id": subscription_id,
+                    "user_id": user_id_str,
+                    "payment_status": {"$in": ["succeeded", "completed"]}
+                })
+                
+                if not existing:
+                    # Calculate amount from subscription
+                    subscription_amount = subscription.get("recurring_pre_tax_amount")
+                    if subscription_amount and subscription_amount > 100:
+                        amount = subscription_amount / 100
+                    else:
+                        plan = subscription.get("plan")
+                        billing = subscription.get("billing_interval", "monthly")
+                        plan_prices = {
+                            "starter": {"monthly": 15.0, "annual": 12.0},
+                            "professional": {"monthly": 30.0, "annual": 24.0},
+                            "business": {"monthly": 50.0, "annual": 40.0},
+                            "enterprise": {"monthly": 100.0, "annual": 80.0}
+                        }
+                        amount = plan_prices.get(plan, {}).get(billing, 0.0)
+                    
+                    tx_doc = {
+                        "transaction_id": f"sub_{subscription_id}_{int(datetime.utcnow().timestamp())}",
+                        "payment_id": None,
+                        "subscription_id": subscription_id,
+                        "user_id": user_id_str,
+                        "package_id": subscription.get("plan"),
+                        "amount": float(amount) if amount else 0.0,
+                        "currency": subscription.get("currency", "usd").lower(),
+                        "payment_status": "succeeded",
+                        "subscription_status": subscription.get("status", "active"),
+                        "billing_interval": subscription.get("billing_interval", "monthly"),
+                        "payment_provider": "dodo",
+                        "invoice_url": None,
+                        "invoice_pdf_url": None,
+                        "invoice_number": None,
+                        "invoice_date": None,
+                        "metadata": {
+                            "created_from_subscription": True,
+                            "created_date": datetime.utcnow().isoformat(),
+                            "synced": True
+                        },
+                        "created_at": subscription.get("created_at") or subscription.get("activated_at") or datetime.utcnow(),
+                        "updated_at": datetime.utcnow()
+                    }
+                    
+                    await db.payment_transactions.insert_one(tx_doc)
+                    synced_count = 1
+                    logger.info(f"Created invoice from subscription data during sync")
         
         return {
             "status": "success",
@@ -1096,22 +1729,58 @@ async def get_customer_invoices(current_user: dict = Depends(get_current_user)):
                             
                             if payments_response.status_code == 200:
                                 payments_data = payments_response.json()
-                                payments_list = payments_data.get("data", []) if isinstance(payments_data, dict) else (payments_data if isinstance(payments_data, list) else [])
+                                # FIX: Check "items" first, then "data" as fallback
+                                if isinstance(payments_data, dict):
+                                    payments_list = payments_data.get("items", []) or payments_data.get("data", [])
+                                elif isinstance(payments_data, list):
+                                    payments_list = payments_data
+                                else:
+                                    payments_list = []
                                 
                                 for payment in payments_list:
                                     payment_id = payment.get("id") or payment.get("payment_id")
+                                    # Skip payment_method_id (pm_ prefix) - we need actual payment IDs
+                                    if not payment_id or payment_id.startswith("pm_"):
+                                        if payment_id and payment_id.startswith("pm_"):
+                                            logger.warning(f"Skipping payment_method_id in get_customer_invoices: {payment_id}")
+                                        continue
                                     if payment_id:
                                         try:
-                                            invoice_url = f"{dodo_base_url}/invoices/payments/{payment_id}"
-                                            invoice_response = await client.get(invoice_url, headers=headers)
+                                            invoice_api_url = f"{dodo_base_url}/invoices/payments/{payment_id}"
+                                            invoice_response = await client.get(invoice_api_url, headers=headers, follow_redirects=True)
                                             
                                             invoice_data = None
+                                            invoice_pdf_url = None
+                                            invoice_url = None
+                                            invoice_number = None
+                                            invoice_date = None
+                                            
                                             if invoice_response.status_code == 200:
                                                 content_type = invoice_response.headers.get("content-type", "")
                                                 if "application/json" in content_type:
                                                     invoice_data = invoice_response.json()
+                                                    # Handle nested data structure
+                                                    if isinstance(invoice_data, dict) and "data" in invoice_data:
+                                                        invoice_data = invoice_data["data"]
+                                                    
+                                                    # Try multiple possible fields for invoice URL
+                                                    invoice_pdf_url = (
+                                                        invoice_data.get("pdf_url") or 
+                                                        invoice_data.get("invoice_pdf_url") or
+                                                        invoice_data.get("invoice_url") or 
+                                                        invoice_data.get("url") or
+                                                        invoice_data.get("download_url") or
+                                                        invoice_data.get("file_url")
+                                                    )
+                                                    
+                                                    invoice_url = invoice_data.get("invoice_url") or invoice_pdf_url
+                                                    invoice_number = invoice_data.get("invoice_number") or invoice_data.get("number")
+                                                    invoice_date = invoice_data.get("invoice_date") or invoice_data.get("date") or invoice_data.get("created_at")
                                                 else:
-                                                    invoice_data = {"pdf_url": invoice_url}
+                                                    # It's a PDF or redirect, use the final URL after redirects
+                                                    invoice_pdf_url = str(invoice_response.url)
+                                                    invoice_url = invoice_pdf_url
+                                                    invoice_data = {"pdf_url": invoice_pdf_url}
                                             
                                             invoices.append({
                                                 "invoice_id": payment_id,
@@ -1124,10 +1793,10 @@ async def get_customer_invoices(current_user: dict = Depends(get_current_user)):
                                                 "billing_interval": subscription.get("billing_interval", "monthly"),
                                                 "created_at": payment.get("created_at"),
                                                 "updated_at": payment.get("updated_at"),
-                                                "invoice_url": invoice_data.get("invoice_url") if invoice_data else None,
-                                                "invoice_pdf_url": invoice_data.get("pdf_url") if invoice_data else invoice_url,
-                                                "invoice_number": invoice_data.get("invoice_number") if invoice_data else None,
-                                                "invoice_date": invoice_data.get("invoice_date") if invoice_data else None
+                                                "invoice_url": invoice_url,
+                                                "invoice_pdf_url": invoice_pdf_url,
+                                                "invoice_number": invoice_number,
+                                                "invoice_date": invoice_date
                                             })
                                         except Exception as e:
                                             logger.warning(f"Could not fetch invoice for payment {payment_id}: {str(e)}")
@@ -1149,6 +1818,127 @@ async def get_customer_invoices(current_user: dict = Depends(get_current_user)):
     except Exception as e:
         logger.error(f"Error fetching invoices: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch invoices: {str(e)}")
+
+
+@router.post("/dodo/fix-invoice-urls")
+async def fix_invoice_urls(current_user: dict = Depends(get_current_user)):
+    """
+    Fix invoice URLs for existing invoices that may have broken or incorrect URLs
+    Re-fetches invoice URLs from Dodo API for all user's invoices
+    """
+    try:
+        user_id = current_user.get("user_id")
+        
+        # Convert user_id to string
+        from bson import ObjectId
+        if isinstance(user_id, ObjectId):
+            user_id_str = str(user_id)
+        else:
+            user_id_str = str(user_id)
+        
+        api_key = os.getenv("DODO_PAYMENTS_API_KEY")
+        if not api_key:
+            raise HTTPException(status_code=500, detail="DODO_PAYMENTS_API_KEY not configured")
+        
+        dodo_base_url = get_dodo_api_base_url()
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        # Get all invoices for this user
+        cursor = db.payment_transactions.find({
+            "user_id": user_id_str,
+            "payment_status": {"$in": ["succeeded", "completed"]},
+            "payment_id": {"$ne": None}  # Only invoices with payment_id
+        })
+        
+        fixed_count = 0
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            async for invoice in cursor:
+                payment_id = invoice.get("payment_id")
+                if not payment_id:
+                    continue
+                
+                # Skip if invoice URL already exists and looks valid
+                existing_url = invoice.get("invoice_pdf_url") or invoice.get("invoice_url")
+                if existing_url and "dodopayments.com" in existing_url:
+                    # Check if URL is accessible
+                    try:
+                        check_response = await client.head(existing_url, headers=headers, timeout=5.0)
+                        if check_response.status_code == 200:
+                            logger.info(f"Invoice URL for {payment_id} is valid, skipping")
+                            continue
+                    except:
+                        pass  # URL is broken, continue to fix it
+                
+                # Try to fetch correct invoice URL
+                try:
+                    invoice_api_url = f"{dodo_base_url}/invoices/payments/{payment_id}"
+                    logger.info(f"Fixing invoice URL for payment {payment_id}")
+                    invoice_response = await client.get(invoice_api_url, headers=headers, follow_redirects=True)
+                    
+                    if invoice_response.status_code == 200:
+                        content_type = invoice_response.headers.get("content-type", "")
+                        
+                        if "application/json" in content_type:
+                            invoice_data = invoice_response.json()
+                            if isinstance(invoice_data, dict) and "data" in invoice_data:
+                                invoice_data = invoice_data["data"]
+                            
+                            invoice_pdf_url = (
+                                invoice_data.get("pdf_url") or 
+                                invoice_data.get("invoice_pdf_url") or
+                                invoice_data.get("invoice_url") or 
+                                invoice_data.get("url") or
+                                invoice_data.get("download_url") or
+                                invoice_data.get("file_url")
+                            )
+                            
+                            invoice_url = invoice_data.get("invoice_url") or invoice_pdf_url
+                            invoice_number = invoice_data.get("invoice_number") or invoice_data.get("number")
+                            invoice_date = invoice_data.get("invoice_date") or invoice_data.get("date")
+                        else:
+                            # It's a PDF or redirect
+                            invoice_pdf_url = str(invoice_response.url)
+                            invoice_url = invoice_pdf_url
+                            invoice_number = None
+                            invoice_date = None
+                        
+                        if invoice_pdf_url:
+                            # Update the invoice in database
+                            await db.payment_transactions.update_one(
+                                {"_id": invoice.get("_id")},
+                                {
+                                    "$set": {
+                                        "invoice_url": invoice_url,
+                                        "invoice_pdf_url": invoice_pdf_url,
+                                        "invoice_number": invoice_number,
+                                        "invoice_date": invoice_date,
+                                        "updated_at": datetime.utcnow()
+                                    }
+                                }
+                            )
+                            fixed_count += 1
+                            logger.info(f"✅ Fixed invoice URL for payment {payment_id}: {invoice_pdf_url}")
+                        else:
+                            logger.warning(f"⚠️ No invoice URL found in API response for {payment_id}")
+                    else:
+                        logger.warning(f"⚠️ Could not fetch invoice for payment {payment_id}: {invoice_response.status_code}")
+                except Exception as e:
+                    logger.error(f"❌ Error fixing invoice URL for {payment_id}: {str(e)}")
+        
+        return {
+            "status": "success",
+            "message": f"Fixed {fixed_count} invoice URL(s)",
+            "fixed_count": fixed_count
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fixing invoice URLs: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fix invoice URLs: {str(e)}")
 
 
 @router.post("/enterprise-contact")
