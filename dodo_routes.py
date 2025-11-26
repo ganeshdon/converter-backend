@@ -31,7 +31,7 @@ load_dotenv(ROOT_DIR / '.env')
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev")
 RESEND_FROM_NAME = os.getenv("RESEND_FROM_NAME", "Bank Statement Converter")
-ENTERPRISE_CONTACT_EMAIL = "info@yourbankstatementconverter.com"
+ENTERPRISE_CONTACT_EMAIL = os.getenv("ENTERPRISE_CONTACT_EMAIL", "info@yourbankstatementconverter.com")
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -2074,6 +2074,7 @@ async def enterprise_contact(request: Request):
                 raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
         
         # Store in database
+        submitted_at = datetime.utcnow()
         contact_data = {
             "name": data.get("name"),
             "company_name": data.get("company_name"),
@@ -2081,20 +2082,37 @@ async def enterprise_contact(request: Request):
             "phone": data.get("phone"),
             "email": data.get("email"),
             "message": data.get("message"),
-            "submitted_at": datetime.utcnow(),
+            "submitted_at": submitted_at,
+            "submitted_at_str": submitted_at.strftime("%Y-%m-%d %H:%M:%S UTC"),
             "status": "pending"
         }
         
         await db.enterprise_contacts.insert_one(contact_data)
         
         # Send email notification
+        email_sent = False
+        email_error_msg = None
         try:
-            await send_enterprise_contact_email(contact_data)
+            email_sent = await send_enterprise_contact_email(contact_data)
+            if not email_sent:
+                email_error_msg = "Email sending failed. Please check server logs for details."
+                logger.error(f"Enterprise contact email failed to send for {contact_data['email']}")
         except Exception as email_error:
+            email_error_msg = str(email_error)
             logger.error(f"Failed to send email notification: {str(email_error)}")
-            # Don't fail the request if email fails
+            logger.exception(email_error)
         
-        return {"status": "success", "message": "Your request has been submitted. We'll contact you soon!"}
+        # Return success even if email fails (data is stored), but log the issue
+        response_message = "Your request has been submitted. We'll contact you soon!"
+        if not email_sent:
+            logger.warning(f"Enterprise contact form submitted but email notification failed. Contact: {contact_data['email']}, Company: {contact_data['company_name']}")
+        
+        return {
+            "status": "success", 
+            "message": response_message,
+            "email_sent": email_sent,
+            "email_error": email_error_msg if not email_sent else None
+        }
         
     except HTTPException:
         raise
@@ -2108,6 +2126,11 @@ async def send_enterprise_contact_email(contact_data: dict):
     Send email notification for enterprise contact form using Resend
     """
     try:
+        # Validate recipient email address
+        if not ENTERPRISE_CONTACT_EMAIL or '@' not in ENTERPRISE_CONTACT_EMAIL:
+            logger.error(f"Invalid ENTERPRISE_CONTACT_EMAIL: {ENTERPRISE_CONTACT_EMAIL}")
+            return False
+        
         # If Resend API key is not configured, log the email instead
         if not RESEND_API_KEY:
             logger.warning(f"Resend API key not configured. Enterprise contact form submission from {contact_data['email']}")
@@ -2124,6 +2147,7 @@ async def send_enterprise_contact_email(contact_data: dict):
         # Log configuration
         logger.info(f"Attempting to send enterprise contact email to {ENTERPRISE_CONTACT_EMAIL}")
         logger.info(f"Using FROM email: {RESEND_FROM_EMAIL}")
+        logger.info(f"Resend API key configured: Yes (starts with {RESEND_API_KEY[:5]}...)")
         
         # Set Resend API key
         resend.api_key = RESEND_API_KEY
@@ -2139,6 +2163,7 @@ async def send_enterprise_contact_email(contact_data: dict):
                 params = {
                     "from": f"{RESEND_FROM_NAME} <{RESEND_FROM_EMAIL}>",
                     "to": [ENTERPRISE_CONTACT_EMAIL],
+                    "reply_to": contact_data.get('email'),  # Allow replies to go to the submitter
                     "subject": subject,
                     "html": html_body,
                     "text": text_body,
@@ -2154,15 +2179,25 @@ async def send_enterprise_contact_email(contact_data: dict):
                 if result and isinstance(result, dict):
                     if result.get('id'):
                         logger.info(f"Resend email sent successfully. Email ID: {result.get('id')}")
+                        logger.info(f"Email sent to: {ENTERPRISE_CONTACT_EMAIL}, from: {RESEND_FROM_EMAIL}")
                         return True
                     elif result.get('error'):
                         error_msg = result.get('error', {}).get('message', 'Unknown error')
-                        logger.error(f"Resend API error: {error_msg}")
+                        error_type = result.get('error', {}).get('type', 'Unknown')
+                        logger.error(f"Resend API error: {error_type} - {error_msg}")
                         logger.error(f"Full error response: {result}")
+                        # Check for specific error types
+                        if 'domain' in error_msg.lower() or 'not verified' in error_msg.lower():
+                            logger.error(f"Domain verification issue. Check if {RESEND_FROM_EMAIL.split('@')[1]} is verified in Resend")
+                        elif 'unauthorized' in error_msg.lower() or '401' in str(result):
+                            logger.error("API key authorization issue. Check RESEND_API_KEY")
                         return False
                     else:
                         logger.error(f"Resend returned unexpected response (no 'id' or 'error' field): {result}")
                         return False
+                elif result is None:
+                    logger.error("Resend API returned None - this should not happen")
+                    return False
                 else:
                     logger.error(f"Resend returned unexpected response type: {type(result)}, value: {result}")
                     return False
@@ -2175,8 +2210,11 @@ async def send_enterprise_contact_email(contact_data: dict):
                 # Check for common error patterns
                 if 'unauthorized' in error_msg.lower() or '401' in error_msg:
                     logger.error("Possible issue: Invalid Resend API key or API key not authorized")
-                elif 'domain' in error_msg.lower() or 'from' in error_msg.lower():
-                    logger.error(f"Possible issue: FROM email ({RESEND_FROM_EMAIL}) might not be verified in Resend")
+                elif 'domain' in error_msg.lower() or 'from' in error_msg.lower() or 'testing emails' in error_msg.lower() or 'verify a domain' in error_msg.lower():
+                    logger.error(f"DOMAIN VERIFICATION REQUIRED: FROM email ({RESEND_FROM_EMAIL}) is not verified in Resend")
+                    logger.error("SOLUTION: 1) Go to https://resend.com/domains and verify your domain")
+                    logger.error(f"         2) Update RESEND_FROM_EMAIL in .env to use your verified domain (e.g., noreply@yourbankstatementconverter.com)")
+                    logger.error(f"         3) Current FROM email '{RESEND_FROM_EMAIL}' can only send to your account email")
                 elif 'rate limit' in error_msg.lower():
                     logger.error("Possible issue: Rate limit exceeded for Resend API")
                 
@@ -2237,7 +2275,7 @@ def format_enterprise_contact_email_html(contact_data: dict) -> str:
                 </tr>
                 <tr>
                     <td style="padding: 8px 0; font-weight: bold;">Submitted:</td>
-                    <td style="padding: 8px 0;">{contact_data['submitted_at']}</td>
+                    <td style="padding: 8px 0;">{contact_data.get('submitted_at_str', contact_data.get('submitted_at', datetime.utcnow()).strftime("%Y-%m-%d %H:%M:%S UTC") if isinstance(contact_data.get('submitted_at'), datetime) else str(contact_data.get('submitted_at', 'N/A')))}
                 </tr>
             </table>
             <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
@@ -2253,6 +2291,10 @@ def format_enterprise_contact_email_html(contact_data: dict) -> str:
 
 def format_enterprise_contact_email_body(contact_data: dict) -> str:
     """Format enterprise contact email as plain text"""
+    submitted_at_str = contact_data.get('submitted_at_str', 
+                                       contact_data.get('submitted_at', datetime.utcnow()).strftime("%Y-%m-%d %H:%M:%S UTC") 
+                                       if isinstance(contact_data.get('submitted_at'), datetime) 
+                                       else str(contact_data.get('submitted_at', 'N/A')))
     return f"""
 New Enterprise Contact Form Submission
 
@@ -2262,7 +2304,7 @@ Company: {contact_data['company_name']}
 Email: {contact_data['email']}
 Phone: {contact_data['phone']}
 Website: {contact_data.get('website', 'N/A')}
-Submitted at: {contact_data['submitted_at']}
+Submitted at: {submitted_at_str}
 
 Message:
 {contact_data['message']}
