@@ -18,6 +18,7 @@ import aiohttp
 import json
 import httpx
 import resend
+import pytz
 # Removed Stripe integration - now using Dodo Payments
 
 # Import our modules
@@ -903,16 +904,35 @@ async def get_documents(current_user: dict = Depends(get_current_user)):
         }
     ).sort("conversion_date", -1).to_list(length=100)
     
-    return [DocumentResponse(
-        id=doc["_id"],
-        original_filename=doc["original_filename"],
-        file_size=doc["file_size"],
-        page_count=doc["page_count"],
-        pages_deducted=doc["pages_deducted"],
-        conversion_date=doc["conversion_date"],
-        download_count=doc.get("download_count", 0),
-        status=doc["status"]
-    ) for doc in documents]
+    # Convert UTC to IST (Indian Standard Time - UTC+5:30) for display
+    ist_timezone = pytz.timezone('Asia/Kolkata')
+    
+    result = []
+    for doc in documents:
+        # Get conversion_date and ensure it's timezone-aware
+        conversion_date = doc["conversion_date"]
+        if conversion_date.tzinfo is None:
+            # If timezone-naive, assume it's UTC
+            conversion_date = conversion_date.replace(tzinfo=timezone.utc)
+        elif conversion_date.tzinfo != timezone.utc:
+            # Convert to UTC first if it's in a different timezone
+            conversion_date = conversion_date.astimezone(timezone.utc)
+        
+        # Convert UTC to IST
+        conversion_date_ist = conversion_date.astimezone(ist_timezone)
+        
+        result.append(DocumentResponse(
+            id=doc["_id"],
+            original_filename=doc["original_filename"],
+            file_size=doc["file_size"],
+            page_count=doc["page_count"],
+            pages_deducted=doc["pages_deducted"],
+            conversion_date=conversion_date_ist,
+            download_count=doc.get("download_count", 0),
+            status=doc["status"]
+        ))
+    
+    return result
 
 @api_router.get("/documents/{doc_id}/download")
 async def download_document(doc_id: str, current_user: dict = Depends(get_current_user)):
