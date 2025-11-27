@@ -316,12 +316,12 @@ async def check_subscription_status(subscription_id: str, current_user: dict = D
                 
                 # Determine pages based on plan (must match SUBSCRIPTION_PACKAGES in server.py)
                 pages_limit_map = {
-                    "starter": 400,
+                    "starter": 2,
                     "professional": 1000,
                     "business": 4000,
                     "enterprise": -1  # -1 means unlimited
                 }
-                pages_limit = pages_limit_map.get(plan, 400)
+                pages_limit = pages_limit_map.get(plan, 2)
                 new_plan_pages = pages_limit if pages_limit != -1 else -1
                 
                 # Get billing_interval from subscription
@@ -564,12 +564,12 @@ async def handle_subscription_active(data: dict):
         
         # Determine pages based on plan (must match SUBSCRIPTION_PACKAGES in server.py)
         pages_limit_map = {
-            "starter": 400,
+            "starter": 2,
             "professional": 1000,
             "business": 4000,
             "enterprise": -1  # -1 means unlimited
         }
-        pages_limit = pages_limit_map.get(plan, 400)
+        pages_limit = pages_limit_map.get(plan, 2)
         new_plan_pages = pages_limit if pages_limit != -1 else -1
         
         # Get billing_interval from subscription
@@ -712,12 +712,12 @@ async def handle_subscription_renewed(data: dict):
         
         # Determine pages based on plan (must match SUBSCRIPTION_PACKAGES in server.py)
         pages_limit_map = {
-            "starter": 400,
+            "starter": 2,
             "professional": 1000,
             "business": 4000,
             "enterprise": -1  # -1 means unlimited
         }
-        pages_limit = pages_limit_map.get(plan, 400)
+        pages_limit = pages_limit_map.get(plan, 2)
         pages_remaining = pages_limit if pages_limit != -1 else -1
         
         # Get billing_interval from subscription (preserve existing if not in subscription)

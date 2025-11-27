@@ -83,8 +83,8 @@ SUBSCRIPTION_PACKAGES = {
         "name": "Starter",
         "monthly_price": 15.0,
         "annual_price": 12.0,  # 20% discount
-        "pages_limit": 400,
-        "features": ["400 pages/month", "Email support", "PDF conversion"]
+        "pages_limit": 4,
+        "features": ["4 pages/month", "Email support", "PDF conversion"]
     },
     "professional": {
         "name": "Professional", 
@@ -416,15 +416,22 @@ async def forgot_password(reset_request: PasswordReset):
     """Request password reset - sends reset token to user's email"""
     user = await users_collection.find_one({"email": reset_request.email})
     
-    # Don't reveal if user exists or not (security best practice)
+    # Check if user exists
     if not user:
-        # Still return success to prevent email enumeration
-        return {"message": "If an account with that email exists, a password reset link has been sent."}
+        return {
+            "message": "No account found with this email address.",
+            "email_exists": False,
+            "email_sent": False
+        }
     
     # Check if user is an OAuth user (no password_hash)
     if not user.get("password_hash"):
-        # Still return success to prevent revealing account type
-        return {"message": "If an account with that email exists, a password reset link has been sent."}
+        return {
+            "message": "This account was created with social login. Please use the same method to sign in.",
+            "email_exists": True,
+            "email_sent": False,
+            "is_oauth": True
+        }
     
     # Generate reset token
     reset_token = str(uuid.uuid4())
@@ -456,8 +463,17 @@ async def forgot_password(reset_request: PasswordReset):
     if not email_sent:
         # Log the link if email sending failed (for development/testing)
         logger.warning(f"Email sending failed. Password reset link for {user['email']}: {reset_link}")
+        return {
+            "message": "Failed to send password reset email. Please try again later.",
+            "email_exists": True,
+            "email_sent": False
+        }
     
-    return {"message": "If an account with that email exists, a password reset link has been sent."}
+    return {
+        "message": "Password reset link has been sent to your email.",
+        "email_exists": True,
+        "email_sent": True
+    }
 
 @api_router.post("/auth/reset-password")
 async def reset_password(reset_request: PasswordResetRequest):
