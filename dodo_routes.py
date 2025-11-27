@@ -97,7 +97,10 @@ db = client[DB_NAME]
 
 # Get frontend URL from environment variable
 # For production, this should be set to your actual domain (e.g., https://yourbankstatementconverter.com)
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://yourbankstatementconverter.com")
+
+# Log FRONTEND_URL for debugging
+logger.info(f"dodo_routes.py - FRONTEND_URL loaded: {FRONTEND_URL}")
 
 def parse_datetime(date_value):
     """Parse datetime from various formats"""

@@ -43,6 +43,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Also check system environment variables (for production deployments)
+# This ensures environment variables set in the system are used even if .env file doesn't exist
+# Note: load_dotenv() by default doesn't override existing env vars, so system vars take precedence
+if 'FRONTEND_URL' in os.environ:
+    logger.info(f"FRONTEND_URL found in system environment: {os.environ.get('FRONTEND_URL')}")
+
 # Debug: Log .env file location and if it exists
 logger.info(f"Loading .env from: {env_path}")
 logger.info(f".env file exists: {env_path.exists()}")
@@ -453,8 +459,10 @@ async def forgot_password(reset_request: PasswordReset):
     # Insert new reset token
     await password_reset_tokens_collection.insert_one(reset_token_doc)
     
-    # Generate reset link
+    # Generate reset link - log for debugging
     reset_link = f"{FRONTEND_URL}/reset-password?token={reset_token}"
+    logger.info(f"Generated reset link using FRONTEND_URL: {FRONTEND_URL}")
+    logger.info(f"Full reset link: {reset_link}")
     
     # Send email with reset link
     user_name = user.get("full_name", "")
