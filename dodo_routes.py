@@ -300,100 +300,236 @@ async def check_subscription_status(subscription_id: str, current_user: dict = D
         
         logger.info(f"📡 Subscription status from Dodo: {subscription.status}")
         
+        # MongoDB setup
+        mongo_client = AsyncIOMotorClient(os.getenv("MONGO_URL", "mongodb://localhost:27017"))
+        db_name = os.getenv("DB_NAME", "test_database")
+        db = mongo_client[db_name]
+        
+        # Get subscription from database
+        db_subscription = await db.subscriptions.find_one({"subscription_id": subscription_id})
+        
+        if not db_subscription:
+            return {"status": "not_found", "message": "Subscription not found in database"}
+        
+        user_id = db_subscription["user_id"]
+        plan = normalize_plan_name(db_subscription["plan"])
+        billing_interval = db_subscription.get("billing_interval", "monthly")
+        
+        # Convert user_id to string
+        from bson import ObjectId
+        if isinstance(user_id, ObjectId):
+            user_id_str = str(user_id)
+        else:
+            user_id_str = str(user_id)
+        
         # If subscription is active, update database
         if subscription.status == "active":
-            # MongoDB setup
-            mongo_client = AsyncIOMotorClient(os.getenv("MONGO_URL", "mongodb://localhost:27017"))
-            db_name = os.getenv("DB_NAME", "test_database")
-            db = mongo_client[db_name]
+            # Determine pages based on plan (must match SUBSCRIPTION_PACKAGES in server.py)
+            pages_limit_map = {
+                "starter": 2,
+                "professional": 1000,
+                "business": 4000,
+                "enterprise": -1  # -1 means unlimited
+            }
+            pages_limit = pages_limit_map.get(plan, 2)
+            new_plan_pages = pages_limit if pages_limit != -1 else -1
             
-            # Get subscription from database
-            db_subscription = await db.subscriptions.find_one({"subscription_id": subscription_id})
+            # Get current user to check for existing subscription and pages
+            user = await db.users.find_one({"_id": user_id})
+            current_plan = user.get("subscription_tier") if user else None
+            current_pages_remaining = user.get("pages_remaining", 0) if user else 0
+            current_pages_limit = user.get("pages_limit", 0) if user else 0
             
-            if db_subscription:
-                user_id = db_subscription["user_id"]
-                plan = normalize_plan_name(db_subscription["plan"])
-                
-                # Determine pages based on plan (must match SUBSCRIPTION_PACKAGES in server.py)
-                pages_limit_map = {
-                    "starter": 2,
-                    "professional": 1000,
-                    "business": 4000,
-                    "enterprise": -1  # -1 means unlimited
-                }
-                pages_limit = pages_limit_map.get(plan, 2)
-                new_plan_pages = pages_limit if pages_limit != -1 else -1
-                
-                # Get billing_interval from subscription
-                billing_interval = db_subscription.get("billing_interval", "monthly")
-                
-                # Get current user to check for existing subscription and pages
-                user = await db.users.find_one({"_id": user_id})
-                current_plan = user.get("subscription_tier") if user else None
-                current_pages_remaining = user.get("pages_remaining", 0) if user else 0
-                current_pages_limit = user.get("pages_limit", 0) if user else 0
-                
-                # Check if this is an upgrade (different plan) or first subscription
-                is_upgrade = current_plan and current_plan != plan and current_plan != "daily_free"
-                is_first_subscription = not current_plan or current_plan == "daily_free"
-                
-                # Calculate new pages_remaining and pages_limit
-                if new_plan_pages == -1:
-                    # Enterprise plan - unlimited (always set to unlimited)
-                    pages_remaining = -1
-                    pages_limit = -1
-                    logger.info(f"Enterprise plan: Setting pages to unlimited")
-                elif is_upgrade and current_pages_remaining > 0 and current_pages_remaining != -1:
-                    # User is upgrading: add new plan's pages to existing pages
-                    # Only add if current pages are not unlimited (-1)
-                    pages_remaining = current_pages_remaining + new_plan_pages
-                    # Also update pages_limit to reflect the total available pages
-                    pages_limit = current_pages_limit + new_plan_pages
-                    logger.info(f"Upgrade detected: Adding {new_plan_pages} pages to existing {current_pages_remaining} pages = {pages_remaining} total (limit: {pages_limit})")
-                else:
-                    # First subscription, same plan, or upgrading from unlimited: use new plan's pages
-                    pages_remaining = new_plan_pages
-                    pages_limit = new_plan_pages
-                    logger.info(f"First subscription or same plan: Setting pages to {pages_remaining} (limit: {pages_limit})")
-                
-                # Update user with subscription details
-                await db.users.update_one(
-                    {"_id": user_id},
-                    {
-                        "$set": {
-                            "subscription_status": "active",
-                            "subscription_tier": plan,
-                            "billing_interval": billing_interval,
-                            "pages_limit": pages_limit,
-                            "pages_remaining": pages_remaining,
-                            "updated_at": datetime.utcnow()
-                        }
-                    }
-                )
-                
-                # Update subscription status
-                await db.subscriptions.update_one(
-                    {"subscription_id": subscription_id},
-                    {
-                        "$set": {
-                            "status": "active",
-                            "activated_at": datetime.utcnow(),
-                            "updated_at": datetime.utcnow()
-                        }
-                    }
-                )
-                
-                logger.info(f"Successfully updated subscription for user {user_id}")
-                
-                return {
-                    "status": "success",
-                    "subscription_status": "active",
-                    "plan": plan,
-                    "pages_limit": pages_limit,
-                    "pages_remaining": pages_remaining
-                }
+            # Check if this is an upgrade (different plan) or first subscription
+            is_upgrade = current_plan and current_plan != plan and current_plan != "daily_free"
+            is_first_subscription = not current_plan or current_plan == "daily_free"
+            
+            # Calculate new pages_remaining and pages_limit
+            if new_plan_pages == -1:
+                # Enterprise plan - unlimited (always set to unlimited)
+                pages_remaining = -1
+                pages_limit = -1
+                logger.info(f"Enterprise plan: Setting pages to unlimited")
+            elif is_upgrade and current_pages_remaining > 0 and current_pages_remaining != -1:
+                # User is upgrading: add new plan's pages to existing pages
+                # Only add if current pages are not unlimited (-1)
+                pages_remaining = current_pages_remaining + new_plan_pages
+                # Also update pages_limit to reflect the total available pages
+                pages_limit = current_pages_limit + new_plan_pages
+                logger.info(f"Upgrade detected: Adding {new_plan_pages} pages to existing {current_pages_remaining} pages = {pages_remaining} total (limit: {pages_limit})")
             else:
-                return {"status": "not_found", "message": "Subscription not found in database"}
+                # First subscription, same plan, or upgrading from unlimited: use new plan's pages
+                pages_remaining = new_plan_pages
+                pages_limit = new_plan_pages
+                logger.info(f"First subscription or same plan: Setting pages to {pages_remaining} (limit: {pages_limit})")
+            
+            # Update user with subscription details
+            await db.users.update_one(
+                {"_id": user_id},
+                {
+                    "$set": {
+                        "subscription_status": "active",
+                        "subscription_tier": plan,
+                        "billing_interval": billing_interval,
+                        "pages_limit": pages_limit,
+                        "pages_remaining": pages_remaining,
+                        "updated_at": datetime.utcnow()
+                    }
+                }
+            )
+            
+            # Update subscription status
+            await db.subscriptions.update_one(
+                {"subscription_id": subscription_id},
+                {
+                    "$set": {
+                        "status": "active",
+                        "activated_at": datetime.utcnow(),
+                        "updated_at": datetime.utcnow()
+                    }
+                }
+            )
+            
+            logger.info(f"Successfully updated subscription for user {user_id}")
+            
+            return {
+                "status": "success",
+                "subscription_status": "active",
+                "plan": plan,
+                "pages_limit": pages_limit,
+                "pages_remaining": pages_remaining
+            }
+        
+        # If subscription is failed, record failed payment transaction
+        elif subscription.status == "failed":
+            logger.error(f"⚠️ Subscription failed: {subscription_id}")
+            
+            # Update subscription status in database
+            await db.subscriptions.update_one(
+                {"subscription_id": subscription_id},
+                {
+                    "$set": {
+                        "status": "failed",
+                        "updated_at": datetime.utcnow()
+                    }
+                }
+            )
+            
+            # Try to fetch payments for this subscription to record failed payment
+            try:
+                api_key = os.getenv("DODO_PAYMENTS_API_KEY")
+                dodo_base_url = get_dodo_api_base_url()
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                }
+                
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    # Fetch payments for this subscription
+                    payments_url = f"{dodo_base_url}/payments"
+                    params = {"subscription_id": subscription_id}
+                    
+                    payments_response = await client.get(payments_url, headers=headers, params=params)
+                    
+                    if payments_response.status_code == 200:
+                        payments_data = payments_response.json()
+                        # Check "items" first, then "data" as fallback
+                        if isinstance(payments_data, dict):
+                            payments_list = payments_data.get("items", []) or payments_data.get("data", [])
+                        elif isinstance(payments_data, list):
+                            payments_list = payments_data
+                        else:
+                            payments_list = []
+                        
+                        logger.info(f"Found {len(payments_list)} payments for failed subscription {subscription_id}")
+                        
+                        # Find failed payments and record them
+                        for payment in payments_list:
+                            payment_id = payment.get("id") or payment.get("payment_id")
+                            payment_status = payment.get("status", "").lower()
+                            
+                            # Skip payment_method_id (pm_ prefix)
+                            if not payment_id or payment_id.startswith("pm_"):
+                                continue
+                            
+                            # Only record if payment status is failed
+                            if payment_status == "failed":
+                                # Check if transaction already exists
+                                existing = await db.payment_transactions.find_one({
+                                    "payment_id": payment_id,
+                                    "user_id": user_id_str
+                                })
+                                
+                                if not existing:
+                                    # Get amount from payment or calculate from plan
+                                    amount = payment.get("amount")
+                                    if not amount or amount == 0:
+                                        # Calculate from plan
+                                        plan_prices = {
+                                            "starter": {"monthly": 15.0, "annual": 12.0},
+                                            "professional": {"monthly": 49.0, "annual": 39.0},
+                                            "business": {"monthly": 149.0, "annual": 119.0},
+                                            "enterprise": {"monthly": 499.0, "annual": 399.0}
+                                        }
+                                        amount = plan_prices.get(plan, {}).get(billing_interval, 0.0)
+                                    
+                                    # Create failed payment transaction record
+                                    tx_doc = {
+                                        "transaction_id": payment_id or f"failed_{subscription_id}_{int(datetime.utcnow().timestamp())}",
+                                        "payment_id": payment_id,
+                                        "subscription_id": subscription_id,
+                                        "user_id": user_id_str,
+                                        "package_id": plan,
+                                        "amount": float(amount) if amount else 0.0,
+                                        "currency": payment.get("currency", "usd"),
+                                        "payment_status": "failed",
+                                        "subscription_status": "failed",
+                                        "billing_interval": billing_interval,
+                                        "payment_provider": "dodo",
+                                        "metadata": {
+                                            "recorded_from_check_subscription": True,
+                                            "subscription_status": "failed"
+                                        },
+                                        "created_at": parse_datetime(payment.get("created_at")) if payment.get("created_at") else datetime.utcnow(),
+                                        "updated_at": datetime.utcnow()
+                                    }
+                                    
+                                    logger.info(f"Recording failed payment transaction: {tx_doc}")
+                                    result = await db.payment_transactions.insert_one(tx_doc)
+                                    logger.info(f"✅ Recorded failed payment transaction: {payment_id} for user {user_id_str}")
+                                    
+                                    # Verify it was saved
+                                    verify = await db.payment_transactions.find_one({"_id": result.inserted_id})
+                                    if verify:
+                                        logger.info(f"Verified: Failed payment transaction saved successfully")
+                                    else:
+                                        logger.error(f"ERROR: Failed payment transaction was not saved!")
+                                else:
+                                    # Update existing transaction to failed if needed
+                                    if existing.get("payment_status") != "failed":
+                                        await db.payment_transactions.update_one(
+                                            {"payment_id": payment_id, "user_id": user_id_str},
+                                            {
+                                                "$set": {
+                                                    "payment_status": "failed",
+                                                    "subscription_status": "failed",
+                                                    "updated_at": datetime.utcnow()
+                                                }
+                                            }
+                                        )
+                                        logger.info(f"Updated existing transaction to failed: {payment_id}")
+                    else:
+                        logger.warning(f"Could not fetch payments for failed subscription: {payments_response.status_code}")
+            except Exception as e:
+                logger.error(f"Error fetching payments for failed subscription: {str(e)}")
+                logger.exception(e)
+            
+            return {
+                "status": "failed",
+                "message": f"Subscription status: {subscription.status}. Failed payment has been recorded."
+            }
+        
+        # For other statuses, just return the status
         else:
             return {
                 "status": subscription.status,
@@ -518,6 +654,16 @@ async def dodo_webhook(request: Request):
                 logger.error(f"Error handling payment.succeeded: {str(e)}")
                 logger.exception(e)
                 raise HTTPException(status_code=500, detail=f"Failed to process payment.succeeded: {str(e)}")
+        
+        # Handle payment.failed event
+        elif event_type == "payment.failed":
+            try:
+                await handle_payment_failed(event_data)
+                logger.info(f"Successfully handled payment.failed event")
+            except Exception as e:
+                logger.error(f"Error handling payment.failed: {str(e)}")
+                logger.exception(e)
+                raise HTTPException(status_code=500, detail=f"Failed to process payment.failed: {str(e)}")
         
         else:
             logger.warning(f"Unhandled webhook event type: {event_type}")
@@ -1023,6 +1169,111 @@ async def handle_payment_succeeded(data: dict):
         logger.error(f"Failed to record payment transaction: {e}")
         logger.exception(e)  # Log full traceback
         raise  # Re-raise to let webhook handler know it failed
+
+
+async def handle_payment_failed(data: dict):
+    """Handle payment.failed event"""
+    payment_id = data.get("payment_id")
+    subscription_id = data.get("subscription_id")
+    amount = data.get("amount")
+    
+    logger.error(f"=== Processing payment.failed ===")
+    logger.error(f"Payment ID: {payment_id}")
+    logger.error(f"Subscription ID: {subscription_id}")
+    logger.error(f"Amount: {amount}")
+    logger.error(f"Full webhook data: {data}")
+    
+    # Record failed payment transaction
+    try:
+        # Try to find associated user_id from subscription metadata or subscriptions collection
+        user_id = None
+        package_id = None
+        billing_interval = None
+        subscription_status = None
+
+        # If the webhook provided metadata with user_id, prefer that
+        metadata = data.get("metadata") or {}
+        if isinstance(metadata, dict) and metadata.get("user_id"):
+            user_id = metadata.get("user_id")
+            package_id = metadata.get("package_id") or metadata.get("plan")
+            billing_interval = metadata.get("billing_interval")
+            logger.info(f"Found user_id from metadata: {user_id}")
+
+        # If we have a subscription_id but no user_id, look it up in our DB
+        if subscription_id and not user_id:
+            sub = await db.subscriptions.find_one({"subscription_id": subscription_id})
+            if sub:
+                user_id = sub.get("user_id")
+                package_id = package_id or sub.get("plan")
+                billing_interval = billing_interval or sub.get("billing_interval")
+                subscription_status = sub.get("status")
+                logger.info(f"Found user_id from subscription lookup: {user_id}")
+            else:
+                logger.warning(f"Subscription {subscription_id} not found in database")
+
+        if not user_id:
+            logger.error(f"Cannot record failed payment: No user_id found for payment {payment_id}")
+            return
+
+        # Convert user_id to string
+        from bson import ObjectId
+        if isinstance(user_id, ObjectId):
+            user_id_str = str(user_id)
+        else:
+            user_id_str = str(user_id)
+
+        # Check if transaction already exists
+        existing = await db.payment_transactions.find_one({
+            "payment_id": payment_id,
+            "user_id": user_id_str
+        })
+        
+        if existing:
+            # Update existing transaction to failed status
+            await db.payment_transactions.update_one(
+                {"payment_id": payment_id, "user_id": user_id_str},
+                {
+                    "$set": {
+                        "payment_status": "failed",
+                        "updated_at": datetime.utcnow()
+                    }
+                }
+            )
+            logger.info(f"Updated existing payment transaction to failed: {payment_id}")
+        else:
+            # Create new failed payment transaction record
+            tx_doc = {
+                "transaction_id": payment_id or f"failed_{subscription_id}_{int(datetime.utcnow().timestamp())}",
+                "payment_id": payment_id,
+                "subscription_id": subscription_id,
+                "user_id": user_id_str,
+                "package_id": package_id,
+                "amount": float(amount) if amount else 0.0,
+                "currency": data.get("currency", "usd"),
+                "payment_status": "failed",
+                "subscription_status": subscription_status or "failed",
+                "billing_interval": billing_interval,
+                "payment_provider": "dodo",
+                "metadata": data.get("metadata", {}),
+                "created_at": datetime.utcnow(),
+                "updated_at": datetime.utcnow()
+            }
+            
+            logger.info(f"Inserting failed payment transaction: {tx_doc}")
+            result = await db.payment_transactions.insert_one(tx_doc)
+            logger.info(f"Insert result: {result.inserted_id}")
+            logger.info(f"Recorded failed payment transaction for user: {user_id_str}, payment: {payment_id}")
+            
+            # Verify it was saved
+            verify = await db.payment_transactions.find_one({"_id": result.inserted_id})
+            if verify:
+                logger.info(f"Verified: Failed payment transaction saved successfully in database")
+            else:
+                logger.error(f"ERROR: Failed payment transaction was not saved!")
+    except Exception as e:
+        logger.error(f"Failed to record failed payment transaction: {e}")
+        logger.exception(e)
+        raise
 
 
 @router.get("/dodo/webhook-test")
@@ -1769,11 +2020,12 @@ async def get_customer_invoices(current_user: dict = Depends(get_current_user)):
             user_id_str = str(user_id)
         
         # Fetch invoices from payment_transactions collection
+        # Include all payment statuses (succeeded, completed, failed, pending, cancelled)
         invoices = []
         cursor = db.payment_transactions.find(
             {
                 "user_id": user_id_str,
-                "payment_status": {"$in": ["succeeded", "completed"]}
+                "payment_status": {"$in": ["succeeded", "completed", "failed", "pending", "cancelled"]}
             }
         ).sort("created_at", -1)  # Sort by most recent first
         
@@ -1964,10 +2216,10 @@ async def fix_invoice_urls(current_user: dict = Depends(get_current_user)):
             "Content-Type": "application/json"
         }
         
-        # Get all invoices for this user
+        # Get all invoices for this user (include all statuses to fix URLs for failed payments too)
         cursor = db.payment_transactions.find({
             "user_id": user_id_str,
-            "payment_status": {"$in": ["succeeded", "completed"]},
+            "payment_status": {"$in": ["succeeded", "completed", "failed", "pending", "cancelled"]},
             "payment_id": {"$ne": None}  # Only invoices with payment_id
         })
         
