@@ -19,6 +19,7 @@ import json
 import httpx
 import resend
 import pytz
+import hashlib
 # Removed Stripe integration - now using Dodo Payments
 
 # Import our modules
@@ -979,19 +980,34 @@ async def delete_document(doc_id: str, current_user: dict = Depends(get_current_
     
     return {"message": "Document deleted successfully"}
 
+# Helper function to create stable device identifier (prevents incognito bypass)
+def create_device_id(ip_address: str, user_agent: str) -> str:
+    """Create a stable device identifier from IP and User-Agent"""
+    # Combine IP and User-Agent
+    combined = f"{ip_address}|{user_agent}"
+    # Create a hash
+    device_hash = hashlib.sha256(combined.encode()).hexdigest()[:16]
+    return f"device_{device_hash}"
+
 # Anonymous conversion tracking endpoints
 @api_router.post("/anonymous/check", response_model=AnonymousConversionResponse)
 async def check_anonymous_conversion(request: Request, conversion_check: AnonymousConversionCheck):
     """Check if anonymous user can perform a free conversion"""
     try:
-        # Get IP address from request
+        # Get IP address and User-Agent from request
         ip_address = request.client.host
+        user_agent = request.headers.get("user-agent", "")
         
-        # Count existing conversions for this fingerprint + IP combo
+        # Create stable device identifier (works even in incognito)
+        device_id = create_device_id(ip_address, user_agent)
+        
+        # Check for existing conversions using:
+        # 1. Browser fingerprint (for normal mode tracking)
+        # 2. Device ID (IP + User-Agent hash - prevents incognito bypass)
         existing_conversions = await anonymous_conversions_collection.count_documents({
             "$or": [
                 {"browser_fingerprint": conversion_check.browser_fingerprint},
-                {"ip_address": ip_address}
+                {"device_id": device_id}  # This blocks incognito mode
             ]
         })
         
@@ -1033,11 +1049,15 @@ async def anonymous_convert_pdf(request: Request, file: UploadFile = File(...)):
         if not browser_fingerprint:
             raise HTTPException(status_code=400, detail="Browser fingerprint required")
         
+        # Create stable device identifier (prevents incognito bypass)
+        device_id = create_device_id(ip_address, user_agent)
+        
         # Check if user has already used free conversion
+        # Check both fingerprint AND device_id to prevent incognito bypass
         existing_conversion = await anonymous_conversions_collection.find_one({
             "$or": [
                 {"browser_fingerprint": browser_fingerprint},
-                {"ip_address": ip_address}
+                {"device_id": device_id}  # This blocks incognito mode
             ]
         })
         
@@ -1059,9 +1079,10 @@ async def anonymous_convert_pdf(request: Request, file: UploadFile = File(...)):
         # Extract data with AI
         extracted_data = await extract_with_ai(tmp_file_path)
         
-        # Record the anonymous conversion
+        # Record the anonymous conversion with device_id
         conversion_record = {
             "browser_fingerprint": browser_fingerprint,
+            "device_id": device_id,  # Store device_id for incognito prevention
             "ip_address": ip_address,
             "filename": file.filename,
             "file_size": len(content),
