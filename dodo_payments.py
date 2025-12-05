@@ -3,12 +3,12 @@ from dodopayments import AsyncDodoPayments
 
 # Product IDs for subscription tiers
 PRODUCT_IDS = {
-    "starter_monthly": "pdt_tfooh1hgdtu28iMdXSRl3",
-    "professional_monthly": "pdt_q0ZUGAq69LZ4vNUZGYjFS",
-    "business_monthly": "pdt_FInGMoMySf6lYrxia8qgq",
-    "starter_annual": "pdt_uO0U9F22GbAd87C6S7CzG",
-    "professional_annual": "pdt_eewWmwQNJ26eMyvhRoG62",
-    "business_annual": "pdt_rQiqTXDkiarEO0HW4WrIS",
+    "starter_monthly": "pdt_3De8vbY7VeAL5N14U1u9v",
+    "professional_monthly": "pdt_OkGQdqYOj4gbCELn16bFV",
+    "business_monthly": "pdt_764AlaHI1InsTdvpe9sKF",
+    "starter_annual": "pdt_qfKfB9Vld2Ju87p8gbw4u",
+    "professional_annual": "pdt_K3LvXF5i6e4hu3bdTbfxw",
+    "business_annual": "pdt_C3OegZyvFVMfXUeaL67oI",
 }
 
 def get_dodo_api_base_url():

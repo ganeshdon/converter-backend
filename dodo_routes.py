@@ -469,7 +469,7 @@ async def check_subscription_status(subscription_id: str, current_user: dict = D
                                     if not amount or amount == 0:
                                         # Calculate from plan
                                         plan_prices = {
-                                            "starter": {"monthly": 15.0, "annual": 12.0},
+                                            "starter": {"monthly": 1.0, "annual": 12.0},
                                             "professional": {"monthly": 49.0, "annual": 39.0},
                                             "business": {"monthly": 149.0, "annual": 119.0},
                                             "enterprise": {"monthly": 499.0, "annual": 399.0}
@@ -782,7 +782,7 @@ async def handle_subscription_active(data: dict):
                 if not existing_invoice:
                     # Get plan price from SUBSCRIPTION_PACKAGES (import from server.py or define here)
                     plan_prices = {
-                        "starter": {"monthly": 15.0, "annual": 12.0},
+                        "starter": {"monthly": 1.0, "annual": 12.0},
                         "professional": {"monthly": 30.0, "annual": 24.0},
                         "business": {"monthly": 50.0, "annual": 40.0},
                         "enterprise": {"monthly": 100.0, "annual": 80.0}
@@ -903,7 +903,7 @@ async def handle_subscription_renewed(data: dict):
             if not existing_invoice:
                 # Get plan price
                 plan_prices = {
-                    "starter": {"monthly": 15.0, "annual": 12.0},
+                    "starter": {"monthly": 1.0, "annual": 12.0},
                     "professional": {"monthly": 30.0, "annual": 24.0},
                     "business": {"monthly": 50.0, "annual": 40.0},
                     "enterprise": {"monthly": 100.0, "annual": 80.0}
@@ -1091,7 +1091,7 @@ async def handle_payment_succeeded(data: dict):
         if not amount:
             if package_id:
                 plan_prices = {
-                    "starter": {"monthly": 15.0, "annual": 12.0},
+                    "starter": {"monthly": 1.0, "annual": 12.0},
                     "professional": {"monthly": 30.0, "annual": 24.0},
                     "business": {"monthly": 50.0, "annual": 40.0},
                     "enterprise": {"monthly": 100.0, "annual": 80.0}
@@ -1106,7 +1106,7 @@ async def handle_payment_succeeded(data: dict):
                     plan = sub.get("plan")
                     billing = sub.get("billing_interval", "monthly")
                     plan_prices = {
-                        "starter": {"monthly": 15.0, "annual": 12.0},
+                        "starter": {"monthly": 1.0, "annual": 12.0},
                         "professional": {"monthly": 30.0, "annual": 24.0},
                         "business": {"monthly": 50.0, "annual": 40.0},
                         "enterprise": {"monthly": 100.0, "annual": 80.0}
@@ -1474,7 +1474,7 @@ async def fetch_and_save_invoice_after_payment(
                 else:
                     # Calculate from plan
                     plan_prices = {
-                        "starter": {"monthly": 15.0, "annual": 12.0},
+                        "starter": {"monthly": 1.0, "annual": 12.0},
                         "professional": {"monthly": 30.0, "annual": 24.0},
                         "business": {"monthly": 50.0, "annual": 40.0},
                         "enterprise": {"monthly": 100.0, "annual": 80.0}
@@ -1639,7 +1639,7 @@ async def fetch_and_save_invoice_after_payment(
                         plan = subscription.get("plan")
                         billing = subscription.get("billing_interval", "monthly")
                         plan_prices = {
-                            "starter": {"monthly": 15.0, "annual": 12.0},
+                            "starter": {"monthly": 1.0, "annual": 12.0},
                             "professional": {"monthly": 30.0, "annual": 24.0},
                             "business": {"monthly": 50.0, "annual": 40.0},
                             "enterprise": {"monthly": 100.0, "annual": 80.0}
@@ -1867,7 +1867,7 @@ async def sync_invoices_from_dodo(current_user: dict = Depends(get_current_user)
                                     plan = subscription.get("plan")
                                     billing = subscription.get("billing_interval", "monthly")
                                     plan_prices = {
-                                        "starter": {"monthly": 15.0, "annual": 12.0},
+                                        "starter": {"monthly": 1.0, "annual": 12.0},
                                         "professional": {"monthly": 30.0, "annual": 24.0},
                                         "business": {"monthly": 50.0, "annual": 40.0},
                                         "enterprise": {"monthly": 100.0, "annual": 80.0}
@@ -1956,7 +1956,7 @@ async def sync_invoices_from_dodo(current_user: dict = Depends(get_current_user)
                         plan = subscription.get("plan")
                         billing = subscription.get("billing_interval", "monthly")
                         plan_prices = {
-                            "starter": {"monthly": 15.0, "annual": 12.0},
+                            "starter": {"monthly": 1.0, "annual": 12.0},
                             "professional": {"monthly": 30.0, "annual": 24.0},
                             "business": {"monthly": 50.0, "annual": 40.0},
                             "enterprise": {"monthly": 100.0, "annual": 80.0}
@@ -2148,7 +2148,7 @@ async def get_customer_invoices(current_user: dict = Depends(get_current_user)):
                                                 plan = subscription.get("plan")
                                                 billing = subscription.get("billing_interval", "monthly")
                                                 plan_prices = {
-                                                    "starter": {"monthly": 15.0, "annual": 12.0},
+                                                    "starter": {"monthly": 1.0, "annual": 12.0},
                                                     "professional": {"monthly": 30.0, "annual": 24.0},
                                                     "business": {"monthly": 50.0, "annual": 40.0},
                                                     "enterprise": {"monthly": 100.0, "annual": 80.0}

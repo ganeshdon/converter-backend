@@ -89,7 +89,7 @@ WORDPRESS_BASE_URL = os.getenv("WORDPRESS_BASE_URL", "https://yourbankstatementc
 SUBSCRIPTION_PACKAGES = {
     "starter": {
         "name": "Starter",
-        "monthly_price": 15.0,
+        "monthly_price": 1.0,
         "annual_price": 12.0,  # 20% discount
         "pages_limit": 4,
         "features": ["4 pages/month", "Email support", "PDF conversion"]
