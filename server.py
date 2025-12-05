@@ -136,7 +136,6 @@ app = FastAPI()
 # Use specific origins to allow credentials
 # For production, set CORS_ORIGINS environment variable to your frontend URL(s)
 # Example: CORS_ORIGINS=http://localhost:3000,https://yourdomain.com
-print(f"CORS Origins configured: {CORS_ORIGINS}")  # Debug log
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
@@ -1379,7 +1378,6 @@ async def count_pdf_pages(pdf_path: str) -> int:
             reader = PyPDF2.PdfReader(file)
             return len(reader.pages)
     except Exception as e:
-        print(f"Error counting PDF pages: {e}")
         return 1  # Default to 1 page if counting fails
 
 async def cleanup_expired_documents():
