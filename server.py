@@ -89,23 +89,26 @@ WORDPRESS_BASE_URL = os.getenv("WORDPRESS_BASE_URL", "https://yourbankstatementc
 SUBSCRIPTION_PACKAGES = {
     "starter": {
         "name": "Starter",
-        "monthly_price": 1.0,
-        "annual_price": 12.0,  # 20% discount
-        "pages_limit": 4,
-        "features": ["4 pages/month", "Email support", "PDF conversion"]
+        "monthly_price": 15.0,
+        "annual_price": 90.0,
+        "pages_limit_monthly": 400,
+        "pages_limit_annual": 4800,
+        "features": ["400 pages/month", "Email support", "PDF conversion"]
     },
     "professional": {
         "name": "Professional", 
         "monthly_price": 30.0,
-        "annual_price": 24.0,  # 20% discount
-        "pages_limit": 1000,
+        "annual_price": 180.0,
+        "pages_limit_monthly": 1000,
+        "pages_limit_annual": 12000,
         "features": ["1000 pages/month", "Priority support", "Advanced features"]
     },
     "business": {
         "name": "Business",
         "monthly_price": 50.0,
-        "annual_price": 40.0,  # 20% discount
-        "pages_limit": 4000,
+        "annual_price": 300.0,
+        "pages_limit_monthly": 4000,
+        "pages_limit_annual": 48000,
         "features": ["4000 pages/month", "Priority support", "Team features"]
     },
     "enterprise": {
@@ -201,10 +204,10 @@ async def signup(user_data: UserSignup):
         "full_name": user_data.full_name,
         "password_hash": hashed_password,
         "subscription_tier": SubscriptionTier.DAILY_FREE,
-        "pages_remaining": 7,  # Daily free tier starts with 7 pages
+        "pages_remaining": 7,  # One-time 7 pages allocation after signup (no daily reset)
         "pages_limit": 7,
         "billing_cycle_start": now,
-        "daily_reset_time": now,
+        "daily_reset_time": now,  # Kept for backward compatibility but not used
         "language_preference": "en",
         "created_at": now,
         "updated_at": now
@@ -251,10 +254,8 @@ async def login(credentials: UserLogin):
     if not verify_password(credentials.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     
-    # Check if daily free user needs reset
-    if user["subscription_tier"] == SubscriptionTier.DAILY_FREE:
-        await check_and_reset_daily_pages(user["_id"])
-        user = await users_collection.find_one({"_id": user["_id"]})  # Refresh user data
+    # No daily reset - pages are one-time allocation after signup
+    # Removed daily reset logic for free tier
     
     # Create access token
     access_token = create_access_token(data={"sub": user["_id"], "email": user["email"]})
@@ -582,10 +583,10 @@ async def get_session_data(request: Request):
                 "full_name": oauth_data["name"],
                 "picture": oauth_data.get("picture"),
                 "subscription_tier": SubscriptionTier.DAILY_FREE,
-                "pages_remaining": 7,  # Daily free tier starts with 7 pages
+                "pages_remaining": 7,  # One-time 7 pages allocation after signup (no daily reset)
                 "pages_limit": 7,
                 "billing_cycle_start": now,
-                "daily_reset_time": now,
+                "daily_reset_time": now,  # Kept for backward compatibility but not used
                 "language_preference": "en",
                 "created_at": now,
                 "updated_at": now,
@@ -711,10 +712,7 @@ async def get_profile(current_user: dict = Depends(get_current_user)):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Check if daily free user needs reset
-    if user["subscription_tier"] == SubscriptionTier.DAILY_FREE:
-        await check_and_reset_daily_pages(user["_id"])
-        user = await users_collection.find_one({"_id": user["_id"]})
+    # No daily reset - pages are one-time allocation after signup
     
     return UserResponse(
         id=user["_id"],
@@ -769,20 +767,13 @@ async def check_pages(pages_request: PagesCheckRequest, current_user: dict = Dep
     
     logger.info(f"check_pages: user_id={current_user['user_id']}, tier={tier}, is_daily_free={is_daily_free}, pages_remaining={user['pages_remaining']}, requested={pages_request.page_count}")
     
-    # Check if daily free user needs reset
-    if is_daily_free:
-        await check_and_reset_daily_pages(user["_id"])
-        user = await users_collection.find_one({"_id": user["_id"]})
-        logger.info(f"check_pages after reset: pages_remaining={user['pages_remaining']}")
-    
+    # No daily reset - pages are one-time allocation after signup
     can_convert = user["pages_remaining"] >= pages_request.page_count
     
     if is_daily_free:
-        daily_reset_time = user["daily_reset_time"]
-        if daily_reset_time and daily_reset_time.tzinfo is None:
-            daily_reset_time = daily_reset_time.replace(tzinfo=timezone.utc)
-        next_reset = daily_reset_time + timedelta(days=1)
-        message = f"You have {user['pages_remaining']} pages remaining today. Resets in {(next_reset - datetime.now(timezone.utc)).seconds // 3600} hours."
+        # One-time free pages allocation - no reset
+        message = f"You have {user['pages_remaining']} of 7 free pages remaining."
+        next_reset = None  # No reset for free tier
     else:
         billing_cycle_start = user.get("billing_cycle_start", datetime.now(timezone.utc))
         if billing_cycle_start and billing_cycle_start.tzinfo is None:
@@ -792,7 +783,7 @@ async def check_pages(pages_request: PagesCheckRequest, current_user: dict = Dep
     
     if not can_convert:
         if is_daily_free:
-            message = "You've used all your daily pages. Upgrade to continue or wait for reset."
+            message = "You've used all your free pages. Please upgrade your plan to continue."
         else:
             message = "You've used all your monthly pages. Upgrade your plan to continue."
     
@@ -837,11 +828,7 @@ async def process_pdf_with_ai(file: UploadFile = File(...), current_user: dict =
         
         logger.info(f"process_pdf: user_id={current_user['user_id']}, tier={tier}, is_daily_free={is_daily_free}, page_count={page_count}, pages_remaining={user['pages_remaining']}")
         
-        # Reset daily pages if needed
-        if is_daily_free:
-            await check_and_reset_daily_pages(user["_id"])
-            user = await users_collection.find_one({"_id": user["_id"]})
-            logger.info(f"process_pdf after reset: pages_remaining={user['pages_remaining']}")
+        # No daily reset - pages are one-time allocation after signup
         
         if user["pages_remaining"] < page_count:
             logger.error(f"Insufficient pages: need {page_count}, have {user['pages_remaining']}")
@@ -1118,15 +1105,31 @@ async def get_pricing_plans():
     plans = []
     
     for package_id, package_data in SUBSCRIPTION_PACKAGES.items():
-        plan = {
-            "tier": package_id,
-            "name": package_data["name"],
-            "price_monthly": package_data["monthly_price"],
-            "price_annual": package_data["annual_price"],
-            "pages_limit": package_data["pages_limit"],
-            "features": package_data["features"],
-            "is_popular": package_id == "professional"  # Mark professional as popular
-        }
+        # Handle enterprise separately (has pages_limit instead of monthly/annual)
+        if package_id == "enterprise":
+            plan = {
+                "tier": package_id,
+                "name": package_data["name"],
+                "price_monthly": package_data["monthly_price"],
+                "price_annual": package_data["annual_price"],
+                "pages_limit": package_data["pages_limit"],
+                "pages_limit_monthly": -1,
+                "pages_limit_annual": -1,
+                "features": package_data["features"],
+                "is_popular": package_id == "professional"  # Mark professional as popular
+            }
+        else:
+            plan = {
+                "tier": package_id,
+                "name": package_data["name"],
+                "price_monthly": package_data["monthly_price"],
+                "price_annual": package_data["annual_price"],
+                "pages_limit": package_data["pages_limit_monthly"],  # Default to monthly for backward compatibility
+                "pages_limit_monthly": package_data["pages_limit_monthly"],
+                "pages_limit_annual": package_data["pages_limit_annual"],
+                "features": package_data["features"],
+                "is_popular": package_id == "professional"  # Mark professional as popular
+            }
         plans.append(plan)
     
     # Add daily free plan
@@ -1405,30 +1408,39 @@ async def periodic_cleanup():
             logger.error(f"Error in periodic cleanup task: {str(e)}")
             await asyncio.sleep(3600)  # Wait before retrying
 
+# DEPRECATED: Daily reset functionality removed - pages are now one-time allocation after signup
+# This function is kept for reference but is no longer called
 async def check_and_reset_daily_pages(user_id: str):
-    """Check if daily free tier user needs page reset"""
-    user = await users_collection.find_one({"_id": user_id})
-    if not user or user["subscription_tier"] != SubscriptionTier.DAILY_FREE:
-        return
+    """DEPRECATED: Check if daily free tier user needs page reset
     
-    now = datetime.now(timezone.utc)
-    last_reset = user.get("daily_reset_time", now)
-    
-    # Ensure last_reset has timezone info
-    if last_reset and last_reset.tzinfo is None:
-        last_reset = last_reset.replace(tzinfo=timezone.utc)
-    
-    # Check if 24 hours have passed
-    if (now - last_reset).total_seconds() >= 24 * 3600:  # 24 hours
-        await users_collection.update_one(
-            {"_id": user_id},
-            {
-                "$set": {
-                    "pages_remaining": 7,  # Reset to 7 pages
-                    "daily_reset_time": now
-                }
-            }
-        )
+    NOTE: This function is no longer used. Free tier users now get 7 pages
+    as a one-time allocation after signup. No daily resets occur.
+    """
+    # Function disabled - pages are one-time allocation
+    return
+    # OLD CODE (commented out):
+    # user = await users_collection.find_one({"_id": user_id})
+    # if not user or user["subscription_tier"] != SubscriptionTier.DAILY_FREE:
+    #     return
+    # 
+    # now = datetime.now(timezone.utc)
+    # last_reset = user.get("daily_reset_time", now)
+    # 
+    # # Ensure last_reset has timezone info
+    # if last_reset and last_reset.tzinfo is None:
+    #     last_reset = last_reset.replace(tzinfo=timezone.utc)
+    # 
+    # # Check if 24 hours have passed
+    # if (now - last_reset).total_seconds() >= 24 * 3600:  # 24 hours
+    #     await users_collection.update_one(
+    #         {"_id": user_id},
+    #         {
+    #             "$set": {
+    #                 "pages_remaining": 7,  # Reset to 7 pages
+    #                 "daily_reset_time": now
+    #             }
+    #         }
+    #     )
 
 async def extract_with_ai(pdf_path: str):
     """Use Google Generative AI to extract bank statement data from PDF"""

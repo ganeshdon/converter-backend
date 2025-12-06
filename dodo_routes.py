@@ -327,14 +327,28 @@ async def check_subscription_status(subscription_id: str, current_user: dict = D
         
         # If subscription is active, update database
         if subscription.status == "active":
-            # Determine pages based on plan (must match SUBSCRIPTION_PACKAGES in server.py)
-            pages_limit_map = {
-                "starter": 2,
+            # Determine pages based on plan and billing interval (must match SUBSCRIPTION_PACKAGES in server.py)
+            billing_interval = data.get("billing_interval", "monthly")
+            
+            pages_limit_map_monthly = {
+                "starter": 400,
                 "professional": 1000,
                 "business": 4000,
                 "enterprise": -1  # -1 means unlimited
             }
-            pages_limit = pages_limit_map.get(plan, 2)
+            
+            pages_limit_map_annual = {
+                "starter": 4800,
+                "professional": 12000,
+                "business": 48000,
+                "enterprise": -1  # -1 means unlimited
+            }
+            
+            if billing_interval == "annual":
+                pages_limit = pages_limit_map_annual.get(plan, 400)
+            else:
+                pages_limit = pages_limit_map_monthly.get(plan, 400)
+            
             new_plan_pages = pages_limit if pages_limit != -1 else -1
             
             # Get current user to check for existing subscription and pages
@@ -711,14 +725,28 @@ async def handle_subscription_active(data: dict):
     if subscription:
         plan = normalize_plan_name(subscription["plan"])
         
-        # Determine pages based on plan (must match SUBSCRIPTION_PACKAGES in server.py)
-        pages_limit_map = {
-            "starter": 2,
+        # Determine pages based on plan and billing interval (must match SUBSCRIPTION_PACKAGES in server.py)
+        billing_interval = subscription.get("billing_interval", "monthly")
+        
+        pages_limit_map_monthly = {
+            "starter": 400,
             "professional": 1000,
             "business": 4000,
             "enterprise": -1  # -1 means unlimited
         }
-        pages_limit = pages_limit_map.get(plan, 2)
+        
+        pages_limit_map_annual = {
+            "starter": 4800,
+            "professional": 12000,
+            "business": 48000,
+            "enterprise": -1  # -1 means unlimited
+        }
+        
+        if billing_interval == "annual":
+            pages_limit = pages_limit_map_annual.get(plan, 400)
+        else:
+            pages_limit = pages_limit_map_monthly.get(plan, 400)
+        
         new_plan_pages = pages_limit if pages_limit != -1 else -1
         
         # Get billing_interval from subscription
@@ -859,14 +887,28 @@ async def handle_subscription_renewed(data: dict):
     if subscription:
         plan = normalize_plan_name(subscription["plan"])
         
-        # Determine pages based on plan (must match SUBSCRIPTION_PACKAGES in server.py)
-        pages_limit_map = {
-            "starter": 2,
+        # Determine pages based on plan and billing interval (must match SUBSCRIPTION_PACKAGES in server.py)
+        billing_interval = subscription.get("billing_interval", "monthly")
+        
+        pages_limit_map_monthly = {
+            "starter": 400,
             "professional": 1000,
             "business": 4000,
             "enterprise": -1  # -1 means unlimited
         }
-        pages_limit = pages_limit_map.get(plan, 2)
+        
+        pages_limit_map_annual = {
+            "starter": 4800,
+            "professional": 12000,
+            "business": 48000,
+            "enterprise": -1  # -1 means unlimited
+        }
+        
+        if billing_interval == "annual":
+            pages_limit = pages_limit_map_annual.get(plan, 400)
+        else:
+            pages_limit = pages_limit_map_monthly.get(plan, 400)
+        
         pages_remaining = pages_limit if pages_limit != -1 else -1
         
         # Get billing_interval from subscription (preserve existing if not in subscription)
